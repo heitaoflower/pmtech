@@ -119,7 +119,7 @@ shader_resources
     texture_2d( ltc_mat, 13 );
     texture_2d( ltc_mag, 12 );
     
-    texture_cube( omni_shadow_texture, 10 );
+    texture_cube_array( omni_shadow_texture, 10 );
     texture_2d_array( shadowmap_texture, 15 );
     texture_2d_array( area_light_textures, 11 );
 };
@@ -393,6 +393,7 @@ ps_output ps_forward_lit( vs_output input )
     
     //for directional lights
     float3 lll = float3(0.0, 0.0, 0.0);
+    int shadow_map_index = 0;
     for( int i = 0; i < int(light_info.x); ++i )
     {        
         float3 light_col = float3( 0.0, 0.0, 0.0 );
@@ -442,7 +443,7 @@ ps_output ps_forward_lit( vs_output input )
             sp.y *= -1.0;
             sp.xyz = sp.xyz * 0.5 + 0.5;
 
-            float4 sm = sample_texture_array_level( shadowmap_texture, sp.xy, float(i), 0 );
+            float4 sm = sample_texture_array_level( shadowmap_texture, sp.xy, float(shadow_map_index), 0 );
             d = sm.r;
             
             shadow = sp.z < d ? 1.0 : 0.0;
@@ -460,7 +461,7 @@ ps_output ps_forward_lit( vs_output input )
                 sp.y *= -1.0;
                 sp.xyz = sp.xyz * 0.5 + 0.5;
                 
-                sm = sample_texture_array_level( shadowmap_texture, sp.xy, float(i), 0 );
+                sm = sample_texture_array_level( shadowmap_texture, sp.xy, float(shadow_map_index), 0 );
                 d = sm.r;
             
                 float fp = 1.0;
@@ -485,15 +486,16 @@ ps_output ps_forward_lit( vs_output input )
                 
                 lit_colour.rgb += profile * sss;
                 lit_colour += albedo.rgb * 0.15;
-                
-                //lit_colour.rgb = float3(abs(dd),abs(dd), abs(dd));
             }
+            
+            ++shadow_map_index;
         }
     }
     
     //for point lights
     int point_start = int(light_info.x);
     int point_end =  int(light_info.x) + int(light_info.y);
+    int omni_shadow_index = 0;
     for( int i = point_start; i < point_end; ++i )
     {
         float3 light_col = float3( 0.0, 0.0, 0.0 );
@@ -529,7 +531,7 @@ ps_output ps_forward_lit( vs_output input )
             light_col *= smoothstep( 0.0, 0.1, s);
         }
         
-        if( lights[i].colour.a == 0.0 )
+        if( lights[i].colour.a == 0.0)
         {
             lit_colour += light_col;
             continue;
@@ -539,14 +541,16 @@ ps_output ps_forward_lit( vs_output input )
         	// omni directional shadow
 			float3 to_light = (input.world_pos.xyz - lights[i].pos_radius.xyz);
 			float d = length(to_light);
-			float cube_d = sample_texture(omni_shadow_texture, normalize(to_light) * float3(1.0, 1.0, -1.0)).r;
+			float3 cv = normalize(to_light) * float3(1.0, 1.0, -1.0);
+			float cube_d = sample_texture_array_level(omni_shadow_texture, cv, float(omni_shadow_index), 0).r;
 			lit_colour += d < cube_d * lights[i].pos_radius.w ? light_col : 0.0;
+			++omni_shadow_index;
         }   
     }
     
     //for spot lights
     int spot_start = point_end;
-    int spot_end =  int(light_info.y) + int(light_info.z);
+    int spot_end =  spot_start + int(light_info.z);
     for(int i = spot_start; i < spot_end; ++i )
     {
         float3 light_col = float3( 0.0, 0.0, 0.0 );
@@ -585,8 +589,32 @@ ps_output ps_forward_lit( vs_output input )
             light_col *= smoothstep( 0.0, 0.1, s);
         }
         
-        
-        lit_colour += light_col;
+        if( lights[i].colour.a == 0.0 )
+        {
+            lit_colour += light_col;
+            continue;
+        }
+        else
+        {            
+            float shadow = 1.0;
+            float d = 1.0;
+            
+            // shadow map
+            float4 offset_pos = float4(input.world_pos.xyz + n.xyz * 0.01, 1.0);
+            float4 sp = mul( offset_pos, shadow_matrix[shadow_map_index] );
+            sp.xyz /= sp.w;
+            sp.y *= -1.0;
+            sp.xyz = sp.xyz * 0.5 + 0.5;
+
+            float4 sm = sample_texture_array_level( shadowmap_texture, sp.xy, float(shadow_map_index), 0 );
+            d = sm.r;
+            
+            shadow = sp.z < d ? 1.0 : 0.0;
+
+            lit_colour += light_col * shadow;
+            
+            ++shadow_map_index;
+        }
     }
     
     // area lights constant colour
@@ -755,7 +783,7 @@ ps_output ps_point_light_shadow( vs_output input )
         // cube map shadow
         float3 to_light = (input.world_pos.xyz - lights[i].pos_radius.xyz);
         float d = length(to_light);
-        float cube_d = sample_texture(omni_shadow_texture, normalize(to_light) * float3(1.0, 1.0, -1.0)).r;
+        float cube_d = 0.0; // sample_texture(omni_shadow_texture, normalize(to_light) * float3(1.0, 1.0, -1.0)).r;
         
         lit_colour = d < cube_d * 100.0 ? light_col : 0.0;
     }
@@ -769,7 +797,7 @@ ps_output ps_point_light_shadow( vs_output input )
 ps_output_depth ps_omni_shadow( vs_output input )
 {
 	ps_output_depth output;
-	float d = length(input.world_pos.xyz - lights[1].pos_radius.xyz) / lights[1].pos_radius.w;
+	float d = length(input.world_pos.xyz - single_light.pos_radius.xyz) / single_light.pos_radius.w;
 	output.depth = d;
 	return output;
 }
