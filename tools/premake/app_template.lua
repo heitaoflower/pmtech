@@ -66,7 +66,6 @@ local function setup_linux()
 end
 
 local function setup_win32()
-
     if renderer_dir == "vulkan" then
         libdirs
         {
@@ -114,12 +113,24 @@ end
 local function setup_ios()
 	links 
 	{ 
-		"OpenGLES.framework",
 		"Foundation.framework",
 		"UIKit.framework",
-		"GLKit.framework",
 		"QuartzCore.framework",
 	}
+	
+	if renderer_dir == "metal" then
+		links 
+		{ 
+			"MetalKit.framework",
+			"Metal.framework"
+		}
+	elseif renderer_dir == "opengl" then
+		links 
+		{ 
+			"OpenGLES.framework",
+			"GLKit.framework",
+		}
+	end
 	
 	files 
 	{ 
@@ -168,11 +179,7 @@ end
 local function setup_bullet()
 	bullet_lib = "bullet_monolithic"
 	bullet_lib_debug = "bullet_monolithic_d"
-	bullet_lib_dir = "osx"
-
-	if platform_dir == "linux" then
-		bullet_lib_dir = "linux"
-	end
+	bullet_lib_dir = platform_dir
 
 	if _ACTION == "vs2017" or _ACTION == "vs2015" then
 		bullet_lib_dir = _ACTION
@@ -208,6 +215,7 @@ end
 
 function create_app(project_name, source_directory, root_directory)
 	project ( project_name )
+		setup_product( project_name )
 		kind "WindowedApp"
 		language "C++"
 		dependson{ "pen", "put" }

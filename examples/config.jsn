@@ -20,9 +20,8 @@
     // mac
     //
     
-    mac: {
-        jsn_inherit: ["base"],
-        
+    mac(base): {
+
         clean: [
             "build/osx",
             "bin/osx",
@@ -70,9 +69,8 @@
         data_dir: "bin/osx/data/"
     },
     
-    mac-gl: {
-        jsn_inherit: ["mac"],
-        
+    mac-gl(mac): {
+
         premake: [
             "xcode4",
             "--renderer=opengl", 
@@ -90,9 +88,8 @@
         ]
     },
 
-    mac-gl-ci: {
-        jsn_inherit: ["mac"],
-        
+    mac-gl-ci(mac): {
+
         premake: [
             "gmake",
             "--renderer=opengl", 
@@ -100,14 +97,66 @@
         ]
     },
 
-    mac-metal-ci: {
-        jsn_inherit: ["mac"],
-        
+    mac-metal-ci(mac): {
+
         premake: [
             "gmake",
             "--renderer=metal", 
             "--platform_dir=osx"
         ]
+    },
+    
+    //
+    // iOS
+    //
+    
+    ios(base): {
+        require_teamid: true,
+        
+        clean: [
+            "build/ios",
+            "bin/ios",
+            "temp"
+        ],
+        
+        libs: [
+            "cd ../third_party && ./build_libs.sh ios",
+        ],
+        
+        premake: [
+            "xcode4",
+            "--renderer=metal", 
+            "--platform_dir=ios",
+            "--xcode_target=ios"
+        ],
+        
+        pmfx: [
+            "-shader_platform metal",
+            "-shader_version ios",
+            "-i assets/shaders ../assets/shaders",
+            "-o bin/ios/data/pmfx/metal",
+            "-h shader_structs",
+            "-t temp/shaders",
+            "-source"
+        ],
+        
+        copy: [
+            ["assets/audio", "bin/ios/data/audio"],
+            ["../assets/audio", "bin/ios/data/audio"],
+            ["assets/configs", "bin/ios/data/configs"],
+            ["../assets/configs", "bin/ios/data/configs"],
+            ["../assets/fonts", "bin/ios/data/fonts"],
+            ["assets/scene", "bin/ios/data/scene"]
+        ],
+        
+        textures: [
+            ["assets/textures", "bin/ios/data/textures"],
+            ["../assets/textures", "bin/ios/data/textures"]
+        ],
+        
+        models: [
+            ["assets/mesh", "bin/ios/data/models"]
+        ],
     },
     
     //

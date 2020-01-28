@@ -18,6 +18,8 @@ using namespace pen;
 // globals / externs.. I want to get rid of
 a_u8                          g_window_resize;
 extern a_u64                  g_frame_index;
+extern a_u64                  g_resize_index;
+extern pen::resolve_resources g_resolve_resources;
 extern window_creation_params pen_window;
 
 #define NBB 3                 // buffers to prevent locking gpu / cpu on dynamic buffers.
@@ -223,7 +225,7 @@ namespace // internal structs and static vars
             if (frame != g_frame_index)
             {
                 _dynamic_pos = 0;
-                frame = g_frame_index;
+                frame = (u32)g_frame_index;
             }
             else
             {
@@ -240,7 +242,7 @@ namespace // internal structs and static vars
             // swap once a frame
             if (g_frame_index != db._frame)
             {
-                db._frame = g_frame_index;
+                db._frame = (u32)g_frame_index;
                 db.swap_buffers();
             }
 
@@ -289,6 +291,7 @@ namespace // internal structs and static vars
     MTKView*           _metal_view;
     current_state      _state;
     a_u64              _frame_sync;
+    a_u64              _resize_sync;
     managed_rt*        _managed_rts = nullptr;
 }
 
@@ -354,6 +357,7 @@ namespace // pen consts -> metal consts
                 return MTLPixelFormatR32Uint;
             case PEN_TEX_FORMAT_R8_UNORM:
                 return MTLPixelFormatR8Unorm;
+#ifndef PEN_PLATFORM_IOS
             case PEN_TEX_FORMAT_BC1_UNORM:
                 return MTLPixelFormatBC1_RGBA;
             case PEN_TEX_FORMAT_BC2_UNORM:
@@ -367,6 +371,11 @@ namespace // pen consts -> metal consts
             case PEN_TEX_FORMAT_D24_UNORM_S8_UINT:
                 return MTLPixelFormatDepth24Unorm_Stencil8;
                 break;
+#else
+            case PEN_TEX_FORMAT_D24_UNORM_S8_UINT:
+                return MTLPixelFormatDepth32Float_Stencil8;
+                break;
+#endif
         }
 
         // unhandled
@@ -396,8 +405,11 @@ namespace // pen consts -> metal consts
     {
         if (tcp.format == PEN_TEX_FORMAT_D24_UNORM_S8_UINT || tcp.sample_count > 1)
             return MTLStorageModePrivate;
-
+#ifndef PEN_PLATFORM_IOS
         return MTLStorageModeManaged;
+#else
+        return MTLStorageModeShared;
+#endif
     }
 
     MTLSamplerAddressMode to_metal_sampler_address_mode(u32 address_mode)
@@ -410,8 +422,10 @@ namespace // pen consts -> metal consts
                 return MTLSamplerAddressModeMirrorRepeat;
             case PEN_TEXTURE_ADDRESS_CLAMP:
                 return MTLSamplerAddressModeClampToEdge;
+#ifndef PEN_PLATFORM_IOS
             case PEN_TEXTURE_ADDRESS_MIRROR_ONCE:
                 return MTLSamplerAddressModeMirrorClampToEdge;
+#endif
         }
 
         // unhandled
@@ -456,6 +470,7 @@ namespace // pen consts -> metal consts
 
     const char* get_metal_version_string()
     {
+#ifndef PEN_PLATFORM_IOS
         if ([_metal_device supportsFeatureSet:MTLFeatureSet_macOS_GPUFamily1_v2])
         {
             return "Metal MacOS 2.0";
@@ -464,7 +479,9 @@ namespace // pen consts -> metal consts
         {
             return "Metal MacOS 1.0";
         }
+#else
 
+#endif
         return "";
     }
 
@@ -734,7 +751,7 @@ namespace pen
             [_state.render_encoder setFrontFacingWinding:rs.winding];
             
             // scissor
-            if (!g_window_resize && rs.scissor_enabled)
+            if (rs.scissor_enabled)
                 [_state.render_encoder setScissorRect:_state.scissor];
         }
 
@@ -837,15 +854,40 @@ namespace pen
 
         u32 renderer_initialise(void* params, u32 bb_res, u32 bb_depth_res)
         {
+            PEN_ASSERT(params); // params must be a pointer to MTKView
             _metal_view = (MTKView*)params;
             _metal_device = _metal_view.device;
 
             _state.command_queue = [_metal_device newCommandQueue];
             _state.render_encoder = 0;
 
-            //reserve space for some resources
-            _res_pool.init(1);
+            // reserve space for some resources
+            _res_pool.init(128);
             _frame_sync = 0;
+            _resize_sync = 1;
+            
+            // create a backbuffer / swap chain, this will be blittled to the drawable on present
+            pen::texture_creation_params tcp = {0};
+            tcp.width = (u32)pen_window.width;
+            tcp.height = (u32)pen_window.height;
+            tcp.sample_count = 1;
+            tcp.cpu_access_flags = 0;
+            tcp.format = PEN_TEX_FORMAT_BGRA8_UNORM;
+            tcp.num_arrays = 1;
+            tcp.num_mips = 1;
+            tcp.bind_flags = PEN_BIND_RENDER_TARGET | PEN_BIND_SHADER_RESOURCE;
+            tcp.pixels_per_block = 1;
+            tcp.sample_quality = 0;
+            tcp.block_size = 32;
+            tcp.usage = PEN_USAGE_DEFAULT;
+            tcp.flags = 0;
+            
+            // colour buffer
+            renderer_create_render_target(tcp, bb_res);
+                        
+            // depth buffer
+            tcp.format = PEN_TEX_FORMAT_D24_UNORM_S8_UINT;
+            renderer_create_render_target(tcp, bb_depth_res);
 
             // frame completion sem
             _state.completion = dispatch_semaphore_create(NBB);
@@ -868,6 +910,13 @@ namespace pen
         {
             while (_frame_sync == g_frame_index.load())
                 thread_sleep_us(100);
+                
+            _resize_sync = g_resize_index.load();
+        }
+        
+        bool renderer_frame_valid()
+        {
+            return _resize_sync.load() == g_resize_index.load();
         }
 
         void renderer_create_clear_state(const clear_state& cs, u32 resource_slot)
@@ -1269,7 +1318,7 @@ namespace pen
                 td.sampleCount = _tcp.sample_count;
 
                 // arrays become slices
-                num_slices = td.depth;
+                num_slices = (u32)td.depth;
             }
             else if (tcp.collection_type == TEXTURE_COLLECTION_CUBE_ARRAY)
             {
@@ -1604,8 +1653,7 @@ namespace pen
         void renderer_set_targets(const u32* const colour_targets, u32 num_colour_targets, u32 depth_target, u32 colour_face,
                                   u32 depth_face)
         {
-            // hash it
-            /*
+#if 0
             HashMurmur2A hh;
             hh.begin();
             hh.add(&num_colour_targets, sizeof(u32));
@@ -1617,7 +1665,7 @@ namespace pen
             if (cur == _state.target_hash)
                 return;
              _state.target_hash = cur;
-            */
+#endif
              
             // create new cmd buffer
             if (_state.cmd_buffer == nil)
@@ -1644,7 +1692,7 @@ namespace pen
             if (backbuffer)
             {
                 _state.drawable = _metal_view.currentDrawable;
-                _state.formats.sample_count = _metal_view.sampleCount;
+                _state.formats.sample_count = (u32)_metal_view.sampleCount;
                 
                 if((num_colour_targets == 1 && colour_targets[0] == PEN_BACK_BUFFER_COLOUR))
                 {
@@ -1670,11 +1718,11 @@ namespace pen
                     _state.formats.depth_attachment = _metal_view.depthStencilPixelFormat;
                     
                     _state.pass.depthAttachment.texture = _metal_view.depthStencilTexture;
-                    _state.pass.depthAttachment.loadAction = MTLLoadActionDontCare;
+                    _state.pass.depthAttachment.loadAction = MTLLoadActionLoad;
                     _state.pass.depthAttachment.storeAction = MTLStoreActionStore;
                     
                     _state.pass.stencilAttachment.texture = _metal_view.depthStencilTexture;
-                    _state.pass.stencilAttachment.loadAction = MTLLoadActionDontCare;
+                    _state.pass.stencilAttachment.loadAction = MTLLoadActionLoad;
                     _state.pass.stencilAttachment.storeAction = MTLStoreActionStore;
                 }
 
@@ -1696,7 +1744,7 @@ namespace pen
                 
                 _state.pass.colorAttachments[i].slice = colour_face;
                 _state.pass.colorAttachments[i].texture = texture;
-                _state.pass.colorAttachments[i].loadAction = MTLLoadActionDontCare;
+                _state.pass.colorAttachments[i].loadAction = MTLLoadActionLoad;
                 _state.pass.colorAttachments[i].storeAction = MTLStoreActionStore;
                 
                 _state.formats.colour_attachments[i] = r.texture.fmt;
@@ -1717,12 +1765,12 @@ namespace pen
 
                 _state.pass.depthAttachment.slice = depth_face;
                 _state.pass.depthAttachment.texture = texture;
-                _state.pass.depthAttachment.loadAction = MTLLoadActionDontCare;
+                _state.pass.depthAttachment.loadAction = MTLLoadActionLoad;
                 _state.pass.depthAttachment.storeAction = MTLStoreActionStore;
 
                 _state.pass.stencilAttachment.slice = depth_face;
                 _state.pass.stencilAttachment.texture = texture;
-                _state.pass.stencilAttachment.loadAction = MTLLoadActionDontCare;
+                _state.pass.stencilAttachment.loadAction = MTLLoadActionLoad;
                 _state.pass.stencilAttachment.storeAction = MTLStoreActionStore;
 
                 _state.formats.depth_attachment = r.texture.fmt;
@@ -1876,9 +1924,6 @@ namespace pen
 
         void renderer_read_back_resource(const resource_read_back_params& rrbp)
         {
-            if (g_window_resize)
-                return;
-
             if (_state.cmd_buffer == nil)
                 _state.cmd_buffer = [_state.command_queue commandBuffer];
 
@@ -1930,24 +1975,7 @@ namespace pen
 
         static void resize_managed_targets()
         {
-            static u32  count = 0;
-            static bool need_resize = false;
-            if (g_window_resize > 0)
-            {
-                need_resize = true;
-            }
-
-            if (need_resize)
-            {
-                count++;
-            }
-            else
-            {
-                count = 0;
-                return;
-            }
-
-            if (count < 5)
+            if (g_window_resize == 0)
                 return;
 
             u32 num_man_rt = sb_count(_managed_rts);
@@ -1962,7 +1990,6 @@ namespace pen
             }
 
             g_window_resize = 0;
-            need_resize = false;
         }
 
         void renderer_present()
@@ -1972,6 +1999,26 @@ namespace pen
                 [_state.render_encoder endEncoding];
                 _state.render_encoder = nil;
             }
+            
+            // blit to drawable
+            /*
+            if(pen_window.sample_count > 1)
+            {
+                renderer_resolve_target(PEN_BACK_BUFFER_COLOUR, RESOLVE_CUSTOM, g_resolve_resources);
+            
+                id<MTLBlitCommandEncoder> bce = [_state.cmd_buffer blitCommandEncoder];
+                [bce copyFromTexture:_res_pool.get(PEN_BACK_BUFFER_COLOUR).texture.tex
+                           toTexture:_metal_view.currentDrawable.texture];
+                [bce endEncoding];
+            }
+            else
+            {
+                id<MTLBlitCommandEncoder> bce = [_state.cmd_buffer blitCommandEncoder];
+                [bce copyFromTexture:_res_pool.get(PEN_BACK_BUFFER_COLOUR).texture.tex
+                           toTexture:_metal_view.currentDrawable.texture];
+                [bce endEncoding];
+            }
+            */
 
             // flush cmd buf and present
             [_state.cmd_buffer presentDrawable:_metal_view.currentDrawable];

@@ -402,14 +402,14 @@ namespace put
             static hash_id id_cl = PEN_HASH("clamp_linear");
             if (id_type != id_sdf)
             {
-                dev_console_log_level(dev_ui::CONSOLE_ERROR, "[shadow] %s is not a signed distance field texture",
+                dev_console_log_level(dev_ui::console_level::error, "[shadow] %s is not a signed distance field texture",
                                       volume_texture_filename.c_str());
                 return;
             }
 
             scene->transforms[node_index].scale = scale;
             scene->shadows[node_index].texture_handle = volume_texture;
-            scene->shadows[node_index].sampler_state = pmfx::get_render_state(id_cl, pmfx::RS_SAMPLER);
+            scene->shadows[node_index].sampler_state = pmfx::get_render_state(id_cl, pmfx::e_render_state::sampler);
             scene->entities[node_index] |= CMP_SDF_SHADOW;
         }
 
@@ -620,7 +620,7 @@ namespace put
                     for (u32 v = 0; v < num_pos_verts; ++v)
                     {
                         vertex_position vp = ((vertex_position*)p_geometry->cpu_position_buffer)[v];
-                        dev_console_log_level(dev_ui::CONSOLE_MESSAGE, "Pos: %f, %f, %f", vp.x, vp.y, vp.z);
+                        dev_console_log_level(dev_ui::console_level::message, "Pos: %f, %f, %f", vp.x, vp.y, vp.z);
                     }
                 }
 
@@ -758,7 +758,7 @@ namespace put
                 {
                     if (resource->texture_handles[t] != 0 && is_valid(resource->texture_handles[t]))
                     {
-                        for (u32 s = 0; s < MAX_TECHNIQUE_SAMPLER_BINDINGS; ++s)
+                        for (u32 s = 0; s < e_pmfx_constants::max_technique_sampler_bindings; ++s)
                         {
                             if (samplers.sb[s].sampler_unit == t)
                             {
@@ -775,9 +775,9 @@ namespace put
             }
 
             // bake ss handles
-            for (u32 s = 0; s < MAX_TECHNIQUE_SAMPLER_BINDINGS; ++s)
+            for (u32 s = 0; s < e_pmfx_constants::max_technique_sampler_bindings; ++s)
                 if (samplers.sb[s].id_sampler_state != 0)
-                    samplers.sb[s].sampler_state = pmfx::get_render_state(samplers.sb[s].id_sampler_state, pmfx::RS_SAMPLER);
+                    samplers.sb[s].sampler_state = pmfx::get_render_state(samplers.sb[s].id_sampler_state, pmfx::e_render_state::sampler);
         }
 
         void bake_material_handles()
@@ -1201,7 +1201,7 @@ namespace put
         s32 load_pmm(const c8* filename, ecs_scene* scene, u32 load_flags)
         {
             if (scene)
-                scene->flags |= INVALIDATE_SCENE_TREE;
+                scene->flags |= e_scene_flags::invalidate_scene_tree;
 
             void* model_file;
             u32   model_file_size;
@@ -1210,7 +1210,7 @@ namespace put
 
             if (err != PEN_ERR_OK || model_file_size == 0)
             {
-                dev_ui::log_level(dev_ui::CONSOLE_ERROR, "[error] load pmm - failed to find file: %s", filename);
+                dev_ui::log_level(dev_ui::console_level::error, "[error] load pmm - failed to find file: %s", filename);
                 return PEN_INVALID_HANDLE;
             }
 
@@ -1542,7 +1542,7 @@ namespace put
                         }
                         else
                         {
-                            put::dev_ui::log_level(dev_ui::CONSOLE_ERROR, "[error] geometry - missing file : %s",
+                            put::dev_ui::log_level(dev_ui::console_level::error, "[error] geometry - missing file : %s",
                                                    geometry_name.c_str());
                         }
                     }
@@ -1627,7 +1627,7 @@ namespace put
 
             scene->samplers[v].sb[0].sampler_unit = SN_VOLUME_TEXTURE;
             scene->samplers[v].sb[0].handle = volume_texture;
-            scene->samplers[v].sb[0].sampler_state = pmfx::get_render_state(vi[i].id_sampler_state, pmfx::RS_SAMPLER);
+            scene->samplers[v].sb[0].sampler_state = pmfx::get_render_state(vi[i].id_sampler_state, pmfx::e_render_state::sampler);
 
             instantiate_geometry(cube, scene, v);
             instantiate_material(material, scene, v);

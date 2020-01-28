@@ -15,6 +15,7 @@
 #include "str/Str.h"
 #include "str_utilities.h"
 #include "timer.h"
+#include "os.h"
 
 #include "ecs/ecs_resources.h"
 #include "ecs/ecs_scene.h"
@@ -512,7 +513,6 @@ namespace put
             static u32 cb_light = -1;
             if(!is_valid(cb_light))
             {
-                put::camera_create_cubemap(&cam_omni_shadow, 0.0001f, 100.0f);
                 cam_omni_shadow.pos = vec3f(0.0f, 0.0f, 0.0f);
                 
                 pen::buffer_creation_params bcp;
@@ -540,6 +540,7 @@ namespace put
                     continue;
                     
                 cam_omni_shadow.pos = scene->transforms[n].translation;
+                put::camera_create_cubemap(&cam_omni_shadow, 0.1f, scene->lights[n].radius * 2.0);
                 put::camera_set_cubemap_face(&cam_omni_shadow, array_face);
                 put::camera_update_shader_constants(&cam_omni_shadow);
                 
@@ -560,7 +561,7 @@ namespace put
         {
             ecs_scene* scene = view.scene;
 
-            if (scene->view_flags & SV_HIDE)
+            if (scene->view_flags & e_scene_view_flags::hide)
                 return;
 
             pen::renderer_set_constant_buffer(view.cb_view, 0, pen::CBUFFER_BIND_PS | pen::CBUFFER_BIND_VS);
@@ -576,10 +577,10 @@ namespace put
                 volume[i] = get_geometry_resource(id_volume[i]);
 
             static hash_id id_cull_front = PEN_HASH("front_face_cull");
-            u32            cull_front = pmfx::get_render_state(id_cull_front, pmfx::RS_SAMPLER);
+            u32            cull_front = pmfx::get_render_state(id_cull_front, pmfx::e_render_state::sampler);
 
             static hash_id id_disable_depth = PEN_HASH("disabled");
-            u32            depth_disabled = pmfx::get_render_state(id_disable_depth, pmfx::RS_DEPTH_STENCIL);
+            u32            depth_disabled = pmfx::get_render_state(id_disable_depth, pmfx::e_render_state::depth_stencil);
 
             for (u32 n = 0; n < scene->num_entities; ++n)
             {
@@ -661,7 +662,7 @@ namespace put
         {
             ecs_scene* scene = view.scene;
 
-            if (scene->view_flags & SV_HIDE)
+            if (scene->view_flags & e_scene_view_flags::hide)
                 return;
 
             s32 draw_count = 0;
@@ -785,7 +786,7 @@ namespace put
                 if (p_mat)
                 {
                     cmp_samplers& samplers = scene->samplers[n];
-                    for (u32 s = 0; s < MAX_TECHNIQUE_SAMPLER_BINDINGS; ++s)
+                    for (u32 s = 0; s < e_pmfx_constants::max_technique_sampler_bindings; ++s)
                     {
                         if (!samplers.sb[s].handle)
                             continue;
@@ -810,7 +811,7 @@ namespace put
                     static u32 ltc_mag = put::load_texture("data/textures/ltc/ltc_amp.dds");
 
 					static hash_id id_clamp_linear = PEN_HASH("clamp_linear");
-                    u32 clamp_linear = pmfx::get_render_state(id_clamp_linear, pmfx::RS_SAMPLER);
+                    u32 clamp_linear = pmfx::get_render_state(id_clamp_linear, pmfx::e_render_state::sampler);
 
                     pen::renderer_set_texture(ltc_mat, clamp_linear, 13, pen::TEXTURE_BIND_PS);
                     pen::renderer_set_texture(ltc_mag, clamp_linear, 12, pen::TEXTURE_BIND_PS);
@@ -1185,7 +1186,7 @@ namespace put
                 if (scene->controllers[c].update_func)
                     scene->controllers[c].update_func(scene->controllers[c], scene, dt);
 
-            if (scene->flags & PAUSE_UPDATE)
+            if (scene->flags & e_scene_flags::pause_update)
             {
                 physics::set_paused(1);
             }
@@ -1593,17 +1594,19 @@ namespace put
             
             // omni directional
             const pmfx::render_target* osm = pmfx::get_render_target(PEN_HASH("omni_shadow_map"));
-            
-            if (osm->num_arrays < num_omni_shadow_maps*6)
+            if(osm)
             {
-                pmfx::rt_resize_params rrp;
-                rrp.width = 256;
-                rrp.height = 256;
-                rrp.format = nullptr;
-                rrp.num_arrays = num_omni_shadow_maps*6;
-                rrp.num_mips = 1;
-                rrp.collection = pen::TEXTURE_COLLECTION_CUBE_ARRAY;
-                pmfx::resize_render_target(PEN_HASH("omni_shadow_map"), rrp);
+                if (osm->num_arrays < num_omni_shadow_maps*6)
+                {
+                    pmfx::rt_resize_params rrp;
+                    rrp.width = 256;
+                    rrp.height = 256;
+                    rrp.format = nullptr;
+                    rrp.num_arrays = num_omni_shadow_maps*6;
+                    rrp.num_mips = 1;
+                    rrp.collection = pen::TEXTURE_COLLECTION_CUBE_ARRAY;
+                    pmfx::resize_render_target(PEN_HASH("omni_shadow_map"), rrp);
+                }
             }
 
             // Update pre skinned vertex buffers
@@ -1935,7 +1938,7 @@ namespace put
 
                 cmp_samplers& samplers = scene->samplers[n];
 
-                for (u32 i = 0; i < MAX_TECHNIQUE_SAMPLER_BINDINGS; ++i)
+                for (u32 i = 0; i < e_pmfx_constants::max_technique_sampler_bindings; ++i)
                 {
                     write_lookup_string(put::get_texture_filename(samplers.sb[i].handle).c_str(), ofs, project_dir.c_str());
                     write_lookup_string(pmfx::get_render_state_name(samplers.sb[i].sampler_state).c_str(), ofs,
@@ -2030,11 +2033,11 @@ namespace put
 
         void load_scene(const c8* filename, ecs_scene* scene, bool merge)
         {
-            scene->flags |= INVALIDATE_SCENE_TREE;
+            scene->flags |= e_scene_flags::invalidate_scene_tree;
             bool error = false;
             Str  project_dir = dev_ui::get_program_preference_filename("project_dir", pen_user_info.working_directory);
 
-            std::ifstream ifs(filename, std::ofstream::binary);
+            std::ifstream ifs(pen::os_path_for_resource(filename), std::ofstream::binary);
 
             // header
             scene_header sh;
@@ -2272,7 +2275,7 @@ namespace put
                     }
                     else
                     {
-                        dev_ui::log_level(dev_ui::CONSOLE_ERROR, "[error] geometry - cannot find pmm file: %s",
+                        dev_ui::log_level(dev_ui::console_level::error, "[error] geometry - cannot find pmm file: %s",
                                           filename.c_str());
 
                         scene->entities[n] &= ~CMP_GEOMETRY;
@@ -2306,7 +2309,7 @@ namespace put
 
                     if (!is_valid(h))
                     {
-                        dev_ui::log_level(dev_ui::CONSOLE_ERROR, "[error] animation - cannot find pma file: %s",
+                        dev_ui::log_level(dev_ui::console_level::error, "[error] animation - cannot find pma file: %s",
                                           anim_name.c_str());
                         error = true;
                     }
@@ -2363,21 +2366,21 @@ namespace put
 
                 cmp_samplers& samplers = scene->samplers[n];
 
-                for (u32 i = 0; i < MAX_TECHNIQUE_SAMPLER_BINDINGS; ++i)
+                for (u32 i = 0; i < e_pmfx_constants::max_technique_sampler_bindings; ++i)
                 {
                     Str texture_name = read_lookup_string(ifs);
 
                     if (!texture_name.empty())
                     {
                         samplers.sb[i].handle = put::load_texture(texture_name.c_str());
-                        samplers.sb[i].sampler_state = pmfx::get_render_state(PEN_HASH("wrap_linear"), pmfx::RS_SAMPLER);
+                        samplers.sb[i].sampler_state = pmfx::get_render_state(PEN_HASH("wrap_linear"), pmfx::e_render_state::sampler);
                     }
 
                     Str sampler_state_name = read_lookup_string(ifs);
 
                     if (!sampler_state_name.empty())
                     {
-                        samplers.sb[i].sampler_state = pmfx::get_render_state(PEN_HASH(sampler_state_name), pmfx::RS_SAMPLER);
+                        samplers.sb[i].sampler_state = pmfx::get_render_state(PEN_HASH(sampler_state_name), pmfx::e_render_state::sampler);
                     }
                 }
             }
@@ -2409,7 +2412,10 @@ namespace put
             if (!merge)
             {
                 scene->view_flags = scene_view_flags;
-                update_view_flags(scene, error);
+                
+                // show bones and mats if we have an error, to aid deugging
+                if(error)
+                    scene->view_flags |= (e_scene_view_flags::matrix | e_scene_view_flags::bones);
             }
 
             ifs.close();

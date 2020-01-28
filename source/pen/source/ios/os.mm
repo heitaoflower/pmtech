@@ -2,24 +2,66 @@
 // Copyright 2014 - 2019 Alex Dixon.
 // License: https://github.com/polymonster/pmtech/blob/master/license.md
 
-#define GLES_SILENCE_DEPRECATION
-
-#import <GLKit/GLKit.h>
-#import <QuartzCore/QuartzCore.h>
-#import <UIKit/UIKit.h>
-
 #include "os.h"
 #include "pen.h"
 #include "renderer.h"
 #include "threads.h"
 #include "timer.h"
+#include "console.h"
+
+#ifdef PEN_RENDERER_METAL
+#import <MetalKit/MetalKit.h>
+#import <Metal/Metal.h>
+#else
+#define GLES_SILENCE_DEPRECATION
+#import <GLKit/GLKit.h>
+#endif
+
+#import <QuartzCore/QuartzCore.h>
+#import <UIKit/UIKit.h>
+
+// global externs
+pen::user_info pen_user_info;
+a_u64          g_frame_index = { 0 };
+a_u64          g_resize_index = { 0 };
+extern         pen::window_creation_params pen_window;
+
+// objc interfaces
+@interface pen_mtk_renderer : NSObject<MTKViewDelegate>
+- (instancetype)initWithView:(nonnull MTKView*)view;
+@end
+
+@interface pen_view_controller : UIViewController
+- (void) viewWasDoubleTapped:(id)sender;
+- (BOOL) prefersHomeIndicatorAutoHidden;
+@end
+
+@interface pen_app_delegate : UIResponder <UIApplicationDelegate>
+@property (strong, nonatomic) UIWindow*             window;
+@property (strong, nonatomic) MTKView*              mtk_view;
+@property (strong, nonatomic) pen_mtk_renderer*     mtk_renderer;
+@property (strong, nonatomic) pen_view_controller*  view_controller;
+@end
 
 namespace
 {
-    EAGLContext* _gl_context;
+    struct os_context
+    {
+        CGRect              wframe;
+        CGSize              wsize;
+        f32                 wscale;
+        pen_app_delegate*   app_delegate;
+    };
+    os_context s_context;
+    
+    void update_pen_window()
+    {
+        // updates pen window size
+        pen_window.width = s_context.wsize.width;
+        pen_window.height = s_context.wsize.height;
+        g_resize_index++;
+    }
 }
-
-pen::user_info pen_user_info;
 
 namespace pen
 {
@@ -27,125 +69,125 @@ namespace pen
     bool renderer_dispatch();
 }
 
-void pen_gl_swap_buffers()
-{
-    [_gl_context presentRenderbuffer:GL_RENDERBUFFER];
-}
-
-void pen_make_gl_context_current()
-{
-    [EAGLContext setCurrentContext:_gl_context];
-}
-
-extern pen::window_creation_params pen_window;
-extern PEN_TRV                     pen::user_entry(void* params);
-
-@interface gl_app_delegate : UIResponder <UIApplicationDelegate, GLKViewDelegate, GLKViewControllerDelegate>
-
-@property(strong, nonatomic) UIWindow* window;
-
-@end
-
-@interface gl_app_delegate ()
-
-@end
-
-@implementation gl_app_delegate
-
+@implementation pen_app_delegate
 - (BOOL)application:(UIApplication*)application didFinishLaunchingWithOptions:(NSDictionary*)launchOptions
 {
-    CGRect window_rect = [[UIScreen mainScreen] bounds];
-
-    self.window = [[UIWindow alloc] initWithFrame:window_rect];
-
-    self.window.backgroundColor = [UIColor whiteColor];
-    [self.window makeKeyAndVisible];
-
-    _gl_context = [[EAGLContext alloc] initWithAPI:kEAGLRenderingAPIOpenGLES3];
-    GLKView* view = [[GLKView alloc] initWithFrame:window_rect];
-    view.context = _gl_context;
-    view.delegate = self;
-    view.drawableDepthFormat = GLKViewDrawableDepthFormat24;
-    view.drawableStencilFormat = GLKViewDrawableStencilFormat8;
-
-    [self.window addSubview:view];
-
-    view.enableSetNeedsDisplay = NO;
-    CADisplayLink* displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(render:)];
-    [displayLink addToRunLoop:[NSRunLoop currentRunLoop] forMode:NSDefaultRunLoopMode];
-
-    GLKViewController* viewController = [[GLKViewController alloc] initWithNibName:nil bundle:nil]; // 1
-    viewController.view = view;
-    viewController.delegate = self;
-    viewController.preferredFramesPerSecond = 60;
-    self.window.rootViewController = viewController;
-
-    // hardcoded for iphone7 right now, as the correct dimension relies on an asset catalog
-    pen_window.width = 750;   // window_rect.size.width;
-    pen_window.height = 1334; // window_rect.size.height;
-
+    // setup base systems
     pen::timer_system_intialise();
+    
+    @autoreleasepool {
+        s_context.app_delegate = self;
+        s_context.wframe = [[UIScreen mainScreen] bounds]; // size in "points"
+        s_context.wscale = [[UIScreen mainScreen] nativeScale]; // scale for retina dimensions
+        
+        s_context.wsize.width = s_context.wframe.size.width * s_context.wscale;
+        s_context.wsize.height = s_context.wframe.size.height * s_context.wscale;
+        
+        update_pen_window();
 
-    pen_make_gl_context_current();
-    pen_gl_swap_buffers();
+        self.window = [[UIWindow alloc] initWithFrame:s_context.wframe];
+        [self.window setBackgroundColor:[UIColor blackColor]];
+        [self.window makeKeyAndVisible];
+        
+        // create metal view
+        self.mtk_view = [[MTKView alloc] initWithFrame:s_context.wframe];
+        [self.mtk_view setDevice:MTLCreateSystemDefaultDevice()];
+        [self.mtk_view setPreferredFramesPerSecond:60];
+        [self.mtk_view setColorPixelFormat:MTLPixelFormatBGRA8Unorm];
+        [self.mtk_view setDepthStencilPixelFormat:MTLPixelFormatDepth32Float_Stencil8];
+        [self.mtk_view setUserInteractionEnabled:YES];
+        //[self.mtk_view setSampleCount:pen_window.sample_count];
 
-    // Override point for customization after application launch.
+        // create metal delegate
+        self.mtk_renderer = [[pen_mtk_renderer alloc] initWithView:self.mtk_view];
+        [self.mtk_view setDelegate:self.mtk_renderer];
+        [self.mtk_view setFramebufferOnly:NO];
+        
+        // create view controller
+        self.view_controller = [[pen_view_controller alloc] initWithNibName:nil bundle:nil];
+         
+        // hook up
+        [self.view_controller setView:self.mtk_view];
+        [self.window setRootViewController:self.view_controller];
+        self.view_controller.view.multipleTouchEnabled = YES;
+        
+        return YES;
+    }
+}
+@end
+
+@implementation pen_mtk_renderer
+- (instancetype)initWithView:(nonnull MTKView *)view
+{
+    [super init];
+    pen::renderer_init((void*)view, false);
+    return self;
+}
+- (void)mtkView:(nonnull MTKView *)view drawableSizeWillChange:(CGSize)size
+{
+    s_context.wsize = size;
+    update_pen_window();
+}
+- (void)drawInMTKView:(nonnull MTKView *)view
+{
+    @autoreleasepool {
+        pen::renderer_dispatch();
+        pen::os_update();
+        g_frame_index++;
+    }
+}
+@end
+
+@implementation pen_view_controller
+- (void) viewWasTapped:(id)sender
+{
+}
+
+- (void) viewWasDoubleTapped:(id)sender
+{
+}
+
+- (BOOL) prefersHomeIndicatorAutoHidden
+{
     return YES;
 }
 
-- (void)glkView:(GLKView*)view drawInRect:(CGRect)rect
+- (void)didReceiveMemoryWarning
 {
-    // render thread
-    static bool init = true;
-    if (init)
-    {
-        init = false;
-        pen::renderer_init(nullptr, false);
-    }
-
-    pen::renderer_dispatch();
-    pen::os_update();
+    PEN_LOG("[warning] ios received memory warning.");
 }
 
-- (void)render:(CADisplayLink*)displayLink
+- (int)getTouchId:(UITouch*) touch
 {
-    GLKView* view = [self.window.subviews objectAtIndex:0];
-    [view display];
+    return 0;
 }
 
-- (void)applicationWillResignActive:(UIApplication*)application
+- (void)handleTouch:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event
 {
-    // stub
-}
 
-- (void)applicationDidEnterBackground:(UIApplication*)application
+}
+- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event
 {
-    // stub
+    [self handleTouch:touches withEvent:event];
 }
-
-- (void)applicationWillEnterForeground:(UIApplication*)application
+- (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event
 {
-    // stub
+    [self handleTouch:touches withEvent:event];
 }
-
-- (void)applicationDidBecomeActive:(UIApplication*)application
+- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event
 {
-    // stub
+    [self handleTouch:touches withEvent:event];
 }
-
-- (void)applicationWillTerminate:(UIApplication*)application
+- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event
 {
-    // stub
+    [self handleTouch:touches withEvent:event];
 }
-
 @end
 
 int main(int argc, char* argv[])
 {
-    NSString* str = NSStringFromClass([gl_app_delegate class]);
-
-    @autoreleasepool
-    {
+    NSString* str = NSStringFromClass([pen_app_delegate class]);
+    @autoreleasepool {
         return UIApplicationMain(argc, argv, nil, str);
     }
 }

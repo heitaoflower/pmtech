@@ -8,6 +8,7 @@ sdk_version = ""
 shared_libs_dir = ""
 pmtech_dir = "../"
 
+-- setup functions
 function setup_from_options()
     if _OPTIONS["renderer"] then
         renderer_dir = _OPTIONS["renderer"]
@@ -50,7 +51,6 @@ function setup_from_action()
             build_cmd = "-std=c++11 -stdlib=libc++"
             link_cmd = "-stdlib=libc++"
         end
-        
     elseif _ACTION == "xcode4" then 
         platform_dir = "osx" 
         
@@ -69,7 +69,6 @@ function setup_from_action()
             build_cmd = "-std=c++11 -stdlib=libc++"
             link_cmd = "-stdlib=libc++ -mmacosx-version-min=10.8"
         end
-        
     elseif _ACTION == "android-studio" then 
         build_cmd = { "-std=c++11" }
     elseif _ACTION == "vs2017" then
@@ -92,29 +91,63 @@ function setup_from_action()
     
 end
 
-function setup_env_ios()
-	xcodebuildsettings
-	{
-		["ARCHS"] = "$(ARCHS_STANDARD)",
-		["SDKROOT"] = "iphoneos",
-		["PRODUCT_BUNDLE_IDENTIFIER"] = "com.pmtech"
+-- setup product
+function setup_product_ios(name)
+	bundle_name = ("com.pmtech") 
+	xcodebuildsettings {
+		["PRODUCT_BUNDLE_IDENTIFIER"] = bundle_name
 	}
 end
 
-function setup_env_osx()
-	xcodebuildsettings
-	{
-		["MACOSX_DEPLOYMENT_TARGET"] = "10.14"
-	}
-end
-
-function setup_env()
-    if platform == "ios" then
-        setup_env_ios()
-    elseif platform == "osx" then
-        setup_env_osx()
+function setup_product(name)
+    if platform == "ios" then setup_product_ios(name)
     end
 end
 
+-- setup env - inserts architecture, platform and sdk settings
+function setup_env_ios()
+	xcodebuildsettings {
+		["ARCHS"] = "$(ARCHS_STANDARD)",
+		["SDKROOT"] = "iphoneos"
+	}
+	if _OPTIONS["teamid"] then
+		xcodebuildsettings {
+			["DEVELOPMENT_TEAM"] = _OPTIONS["teamid"]
+		}
+	end
+end
+
+function setup_env_osx()
+	xcodebuildsettings {
+		["MACOSX_DEPLOYMENT_TARGET"] = "10.14"
+	}
+	architecture "x64"
+end
+
+function setup_env_win32()
+	architecture "x64"
+end
+
+function setup_env_linux()
+	architecture "x64"
+end
+
+function setup_env()
+    if platform == "ios" then setup_env_ios()
+    elseif platform == "osx" then setup_env_osx()
+    elseif platform == "win32" then setup_env_win32()
+    elseif platform == "linux" then setup_env_linux()
+    end
+end
+
+-- setup platform defines - inserts platform defines for porting macros
+function setup_platform_defines()
+	defines
+	{
+		("PEN_PLATFORM_" .. string.upper(platform))
+	}
+end
+
+-- entry
 setup_from_options()
 setup_from_action()

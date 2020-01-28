@@ -46,7 +46,7 @@ namespace
         PEN_HASH("input"),
         PEN_HASH("colour")
     };
-    static_assert(PEN_ARRAY_SIZE(id_widgets) == CW_NUM, "mismatched array size");
+    static_assert(PEN_ARRAY_SIZE(id_widgets) == e_constant_widget::COUNT, "mismatched array size");
 
     struct pmfx_shader
     {
@@ -508,7 +508,7 @@ namespace put
                 tc.id_name = PEN_HASH(tc.name);
 
                 hash_id widget = jc["widget"].as_hash_id(PEN_HASH("input"));
-                for (u32 j = 0; j < CW_NUM; ++j)
+                for (u32 j = 0; j < e_constant_widget::COUNT; ++j)
                 {
                     if (widget == id_widgets[j])
                     {
@@ -562,11 +562,11 @@ namespace put
 
                 if (id_widget == id_checkbox)
                 {
-                    tp.widget = PW_CHECKBOX;
+                    tp.widget = e_permutation_widget::checkbox;
                 }
                 else if (id_widget == id_input)
                 {
-                    tp.widget = PW_INPUT;
+                    tp.widget = e_permutation_widget::input;
                 }
 
                 sb_push(program.permutations, tp);
@@ -609,7 +609,7 @@ namespace put
                     sb.sampler_unit = ts[i].unit;
                     sb.bind_flags = pen::TEXTURE_BIND_PS;
                     sb.id_sampler_state = id_wrap_linear;
-                    sb.sampler_state = pmfx::get_render_state(id_wrap_linear, RS_SAMPLER);
+                    sb.sampler_state = pmfx::get_render_state(id_wrap_linear, e_render_state::sampler);
 
                     samplers.sb[i] = sb;
                 }
@@ -876,6 +876,8 @@ namespace put
 
         void poll_for_changes()
         {
+            PEN_HOTLOADING_ENABLED;
+            
             Str shader_compiler_str = put::get_build_cmd();
             shader_compiler_str.append("-pmfx");
             
@@ -986,7 +988,7 @@ namespace put
             {
                 switch (tp[i].widget)
                 {
-                    case PW_CHECKBOX:
+                    case e_permutation_widget::checkbox:
                         rv |= ImGui::CheckboxFlags(tp[i].name.c_str(), permutation_flags, tp[i].val);
                         break;
                     default:
@@ -1023,24 +1025,24 @@ namespace put
 
                 switch (tc[i].widget)
                 {
-                    case CW_INPUT:
+                    case e_constant_widget::input:
                         if (ImGui::Button(ICON_FA_SLIDERS))
                         {
-                            tc[i].widget = CW_SLIDER;
+                            tc[i].widget = e_constant_widget::slider;
                         }
                         ImGui::SameLine();
                         rv |= ImGui::InputFloatN(tc[i].name.c_str(), f, tc[i].num_elements, 3, 0);
                         break;
-                    case CW_SLIDER:
+                    case e_constant_widget::slider:
                         if (ImGui::Button(ICON_FA_PENCIL))
                         {
-                            tc[i].widget = CW_INPUT;
+                            tc[i].widget = e_constant_widget::input;
                         }
                         ImGui::SameLine();
                         rv |= ImGui::SliderFloatN(tc[i].name.c_str(), f, tc[i].num_elements, tc[i].min, tc[i].max, "%.3f",
                                                   1.0f);
                         break;
-                    case CW_COLOUR:
+                    case e_constant_widget::colour:
 
                         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(f[0] * 0.5f, f[1] * 0.5f, f[2] * 0.5f, 1.0f));
                         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(f[0], f[1], f[2], 1.0f));
@@ -1101,8 +1103,8 @@ namespace put
             static s32  select_index = -1;
 
             // sampler state list
-            c8**     sampler_state_list = pmfx::get_render_state_list(pmfx::RS_SAMPLER);
-            hash_id* sampler_state_id_list = pmfx::get_render_state_id_list(pmfx::RS_SAMPLER);
+            c8**     sampler_state_list = pmfx::get_render_state_list(pmfx::e_render_state::sampler);
+            hash_id* sampler_state_id_list = pmfx::get_render_state_id_list(pmfx::e_render_state::sampler);
 
             for (u32 i = 0; i < num_textures; ++i)
             {
@@ -1144,7 +1146,7 @@ namespace put
 
             if (open_fb)
             {
-                const c8* fn = dev_ui::file_browser(open_fb, dev_ui::FB_OPEN);
+                const c8* fn = dev_ui::file_browser(open_fb, dev_ui::e_file_browser_flags::open);
                 if (fn)
                 {
                     samplers.sb[select_index].handle = put::load_texture(fn);

@@ -40,6 +40,18 @@ def is_excluded(file):
     return False
 
 
+# writes a required value input by the user, into config.user.jsn
+def update_user_config(k, v, config):
+    config[k] = v
+    user = dict()
+    if os.path.exists("config.user.jsn"):
+        user = jsn.loads(open("config.user.jsn", "r").read())
+    user[k] = v
+    bj = open("config.user.jsn", "w+")
+    bj.write(json.dumps(user, indent=4))
+    bj.close()
+
+
 # windows only, prompt user to supply their windows sdk version
 def configure_windows_sdk(config):
     if "sdk_version" in config.keys():
@@ -49,10 +61,7 @@ def configure_windows_sdk(config):
     print("You can find available sdk versions in:")
     print("Visual Studio > Project Properties > General > Windows SDK Version.")
     input_sdk = str(input())
-    config["sdk_version"] = input_sdk
-    bj = open("config.user.jsn", "w+")
-    bj.write(json.dumps(config, indent=4))
-    bj.close()
+    update_user_config("sdk_version", input_sdk, config)
     return
 
 
@@ -70,13 +79,24 @@ def configure_vc_vars_all(config):
         if os.path.isfile(input_dir):
             input_dir = os.path.dirname(input_dir)
         if os.path.exists(input_dir):
-            config["vcvarsall_dir"] = input_dir
-            bj = open("config.user.jsn", "w+")
-            bj.write(json.dumps(config, indent=4))
-            bj.close()
+            update_user_config("vcvarsall_dir", input_dir, config)
             return
         else:
             time.sleep(1)
+
+
+# apple only, ask user for their team id to insert into xcode projects
+def configure_teamid(config):
+    if "teamid" in config.keys():
+        return
+    print("Apple Developer Team ID not set.")
+    print("Please enter your development team ID ie. (7C3Y44TX5K)")
+    print("You can find team id's or personal team id on the Apple Developer website")
+    print("Optionally leave this blank and you select a team later in xcode:")
+    print("  Project > Signing & Capabilities > Team")
+    input_sdk = str(input())
+    update_user_config("teamid", input_sdk, config)
+    return
 
 
 # configure user settings for each platform
@@ -237,8 +257,14 @@ def run_premake(config):
         cmd += " " + c
     # add pmtech dir
     cmd += " --pmtech_dir=\"" + config["env"]["pmtech_dir"] + "\""
+    # add sdk version for windows
     if "sdk_version" in config.keys():
         cmd += " --sdk_version=\"" + str(config["sdk_version"]) + "\""
+    # check for teamid
+    if "require_teamid" in config:
+        if config["require_teamid"]:
+            configure_teamid(config)
+            cmd += " --teamid=\"" + config["teamid"] + "\""
     subprocess.call(cmd, shell=True)
 
 
