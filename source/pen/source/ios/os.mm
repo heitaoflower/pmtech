@@ -5,9 +5,11 @@
 #include "os.h"
 #include "pen.h"
 #include "renderer.h"
+#include "renderer_shared.h"
 #include "threads.h"
 #include "timer.h"
 #include "console.h"
+#include "input.h"
 
 #ifdef PEN_RENDERER_METAL
 #import <MetalKit/MetalKit.h>
@@ -22,9 +24,8 @@
 
 // global externs
 pen::user_info pen_user_info;
-a_u64          g_frame_index = { 0 };
-a_u64          g_resize_index = { 0 };
-extern         pen::window_creation_params pen_window;
+
+extern pen::window_creation_params pen_window;
 
 // objc interfaces
 @interface pen_mtk_renderer : NSObject<MTKViewDelegate>
@@ -57,9 +58,7 @@ namespace
     void update_pen_window()
     {
         // updates pen window size
-        pen_window.width = s_context.wsize.width;
-        pen_window.height = s_context.wsize.height;
-        g_resize_index++;
+        pen::_renderer_resize_backbuffer(s_context.wsize.width, s_context.wsize.height);
     }
 }
 
@@ -133,7 +132,6 @@ namespace pen
     @autoreleasepool {
         pen::renderer_dispatch();
         pen::os_update();
-        g_frame_index++;
     }
 }
 @end
@@ -164,7 +162,40 @@ namespace pen
 
 - (void)handleTouch:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event
 {
-
+    for(UITouch* t in touches)
+    {
+        CGPoint touch_point = [t locationInView:t.view];
+        
+        pen::input_set_mouse_pos(touch_point.x * s_context.wscale, touch_point.y * s_context.wscale);
+        
+        switch(t.phase)
+        {
+            case UITouchPhaseBegan:
+            {
+                pen::input_set_mouse_down(PEN_MOUSE_L);
+                break;
+            }
+            case UITouchPhaseMoved:
+            {
+                pen::input_set_mouse_down(PEN_MOUSE_L);
+                break;
+            }
+            case UITouchPhaseEnded:
+            {
+                pen::input_set_mouse_up(PEN_MOUSE_L);
+                break;
+            }
+            case UITouchPhaseCancelled:
+            {
+                pen::input_set_mouse_up(PEN_MOUSE_L);
+                break;
+            }
+            case UITouchPhaseStationary:
+                break;
+            default:
+                break;
+        }
+    }
 }
 - (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event
 {
@@ -242,9 +273,16 @@ namespace pen
 
     void window_get_frame(window_frame& f)
     {
+        f = {
+            (u32)s_context.wframe.origin.x,
+            (u32)s_context.wframe.origin.y,
+            (u32)s_context.wframe.size.width,
+            (u32)s_context.wframe.size.height
+        };
     }
 
     void window_set_frame(const window_frame& f)
     {
+        // not possible on ios
     }
 }
