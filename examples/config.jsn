@@ -186,7 +186,7 @@
         
         pmfx: [
             "-shader_platform hlsl",
-            "-shader_version 4_0",
+            "-shader_version 5_0",
             "-i assets/shaders ../assets/shaders",
             "-o bin/win32/data/pmfx/hlsl",
             "-h shader_structs",
@@ -284,11 +284,12 @@
         
         pmfx: [
             "-shader_platform glsl",
-            "-shader_version 330",
+            "-shader_version 400",
             "-i assets/shaders ../assets/shaders",
             "-o bin/linux/data/pmfx/glsl",
             "-h shader_structs",
             "-t temp/shaders",
+            "-v_flip",
             "-source"
         ],
         

@@ -3,47 +3,56 @@
 using namespace put;
 using namespace ecs;
 
-pen::window_creation_params pen_window{
-    1280,                    // width
-    720,                     // height
-    4,                       // MSAA samples
-    "msaa_resolve"           // window title / process name
-};
+namespace pen
+{
+    pen_creation_params pen_entry(int argc, char** argv)
+    {
+        pen::pen_creation_params p;
+        p.window_width = 1280;
+        p.window_height = 720;
+        p.window_title = "msaa_resolve";
+        p.window_sample_count = 4;
+        p.user_thread_function = user_entry;
+        p.flags = pen::e_pen_create_flags::renderer;
+        return p;
+    }
+} // namespace pen
 
 void mip_ui()
 {
     bool opened = true;
-    
-    const pmfx::render_target* rs[] = {
-        pmfx::get_render_target(PEN_HASH("msaa_colour")),
-        pmfx::get_render_target(PEN_HASH("msaa_depth")),
-        pmfx::get_render_target(PEN_HASH("msaa_custom"))
-    };
-    
+
+    const pmfx::render_target* rs[] = {pmfx::get_render_target(PEN_HASH("msaa_colour")),
+                                       pmfx::get_render_target(PEN_HASH("msaa_depth")),
+                                       pmfx::get_render_target(PEN_HASH("msaa_custom"))};
+
     ImGui::Begin("MSAA Resolve", &opened, ImGuiWindowFlags_AlwaysAutoResize);
 
     u32 i = 0;
-    for(auto* r : rs)
+    for (auto* r : rs)
     {
-        if(!r)
+        if (!r)
             continue;
-        
+
         f32 w, h;
         pmfx::get_render_target_dimensions(r, w, h);
         ImVec2 size(w / 3, h / 3);
         ImGui::Image(IMG(r->handle), size);
-        
-        if(i == 0)
+
+        if (i == 0)
             ImGui::SameLine();
-        
+
         ++i;
     }
-    
+
     ImGui::End();
 }
 
 void example_setup(ecs::ecs_scene* scene, camera& cam)
 {
+    scene->view_flags &= ~e_scene_view_flags::hide_debug;
+    put::dev_ui::enable(true);
+
     pmfx::init("data/configs/msaa_resolve.jsn");
 
     clear_scene(scene);
@@ -57,12 +66,12 @@ void example_setup(ecs::ecs_scene* scene, camera& cam)
     scene->id_name[light] = PEN_HASH("front_light");
     scene->lights[light].colour = vec3f::one();
     scene->lights[light].direction = vec3f::one();
-    scene->lights[light].type = LIGHT_TYPE_DIR;
+    scene->lights[light].type = e_light_type::dir;
     scene->transforms[light].translation = vec3f::zero();
     scene->transforms[light].rotation = quat();
     scene->transforms[light].scale = vec3f::one();
-    scene->entities[light] |= CMP_LIGHT;
-    scene->entities[light] |= CMP_TRANSFORM;
+    scene->entities[light] |= e_cmp::light;
+    scene->entities[light] |= e_cmp::transform;
 
     // add some spheres
     f32   num_rows = 5;
@@ -84,7 +93,7 @@ void example_setup(ecs::ecs_scene* scene, camera& cam)
                 scene->transforms[capsule].scale = vec3f(2.0f, 2.0f, 2.0f);
                 scene->transforms[capsule].translation = pos;
                 scene->parents[capsule] = capsule;
-                scene->entities[capsule] |= CMP_TRANSFORM;
+                scene->entities[capsule] |= e_cmp::transform;
 
                 instantiate_geometry(capsule_resource, scene, capsule);
                 instantiate_material(default_material, scene, capsule);

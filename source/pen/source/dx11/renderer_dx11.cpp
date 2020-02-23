@@ -2,23 +2,24 @@
 // Copyright 2014 - 2019 Alex Dixon.
 // License: https://github.com/polymonster/pmtech/blob/master/license.md
 
-#include <d3d11_1.h>
-#include <stdlib.h>
-#include <windows.h>
+#include "renderer.h"
+#include "renderer_shared.h"
 
+#include "console.h"
 #include "data_struct.h"
 #include "memory.h"
 #include "pen.h"
 #include "pen_string.h"
-#include "renderer.h"
 #include "threads.h"
 #include "timer.h"
-#include "console.h"
 
 #include "str/Str.h"
 
+#include <d3d11_1.h>
+#include <stdlib.h>
+#include <windows.h>
+
 extern pen::window_creation_params pen_window;
-a_u8                               g_window_resize(0);
 
 namespace
 {
@@ -31,8 +32,7 @@ namespace
     ID3D11RenderTargetView* s_backbuffer_rtv = nullptr;
     ID3D11DeviceContext*    s_immediate_context = nullptr;
     ID3D11DeviceContext1*   s_immediate_context_1 = nullptr;
-
-    u64 s_frame = 0;
+    u64                     s_frame = 0; // to remove
 } // namespace
 
 // level 0 = no errors, level 1 = print errors, level 2 = assert on error
@@ -65,7 +65,7 @@ void check_d3d_error(HRESULT hr)
 namespace pen
 {
     void create_rtvs(u32 crtv, u32 dsv, uint32_t w, uint32_t h);
-    void release_render_target_internal(u32 render_target, bool remove_managed = false);
+    void release_render_target_internal(u32 render_target);
 
     //--------------------------------------------------------------------------------------
     //  PERF MARKER API
@@ -403,9 +403,9 @@ namespace pen
 
     struct ua_buffer
     {
-        ID3D11Buffer*               buf;
-        ID3D11UnorderedAccessView*  uav;
-        ID3D11ShaderResourceView*   srv;
+        ID3D11Buffer*              buf;
+        ID3D11UnorderedAccessView* uav;
+        ID3D11ShaderResourceView*  srv;
     };
 
     struct resource_allocation
@@ -434,13 +434,6 @@ namespace pen
         };
     };
     static res_pool<resource_allocation> _res_pool;
-
-    struct managed_rt
-    {
-        u32                     resource_index;
-        texture_creation_params tcp;
-    };
-    static managed_rt* s_managed_render_targets;
 
     context_state g_context;
 
@@ -476,20 +469,42 @@ namespace pen
     {
         // unused on this platform
     }
-    
+
     void direct::renderer_new_frame()
     {
         // unused on this platform
+        shared_flags flags = _renderer_flags();
+        if (flags & e_shared_flags::backbuffer_resize)
+        {
+            s_immediate_context->OMSetRenderTargets(0, 0, 0);
+
+            // Release all outstanding references to the swap chain's buffers.
+            if (_res_pool[g_context.backbuffer_depth].depth_target->ds)
+            {
+                _res_pool[g_context.backbuffer_depth].depth_target->ds[0]->Release();
+                _res_pool[g_context.backbuffer_depth].depth_target->tex.texture->Release();
+            }
+
+            if (_res_pool[g_context.backbuffer_colour].render_target->rt)
+            {
+                _res_pool[g_context.backbuffer_colour].render_target->rt[0]->Release();
+                _res_pool[g_context.backbuffer_colour].render_target->tex.texture->Release();
+            }
+
+            uint32_t w = pen_window.width;
+            uint32_t h = pen_window.height;
+
+            s_swap_chain->ResizeBuffers(0, w, h, DXGI_FORMAT_UNKNOWN, 0);
+
+            create_rtvs(g_context.backbuffer_colour, g_context.backbuffer_depth, w, h);
+        }
+
+        _renderer_new_frame();
     }
-    
+
     void direct::renderer_end_frame()
     {
         // unused on this platform
-    }
-    
-    bool direct::renderer_frame_valid()
-    {
-        return true;
     }
 
     void direct::renderer_clear(u32 clear_state_index, u32 colour_face, u32 depth_face)
@@ -505,7 +520,7 @@ namespace pen
             {
                 for (s32 i = 0; i < g_context.num_active_colour_targets; ++i)
                 {
-                    s32 ct = g_context.active_colour_target[i];
+                    s32                     ct = g_context.active_colour_target[i];
                     ID3D11RenderTargetView* colour_rtv = nullptr;
 
                     auto rt = _res_pool[ct].render_target;
@@ -563,9 +578,6 @@ namespace pen
         }
     }
 
-    static u32  s_resize_counter = 0;
-    static bool s_needs_resize = 0;
-
     void direct::renderer_present()
     {
         // Just present
@@ -575,56 +587,6 @@ namespace pen
             renderer_pop_perf_marker();
 
         gather_perf_markers();
-
-        if (g_window_resize == 1)
-        {
-            s_immediate_context->OMSetRenderTargets(0, 0, 0);
-
-            // Release all outstanding references to the swap chain's buffers.
-            if (_res_pool[g_context.backbuffer_depth].depth_target->ds)
-            {
-                _res_pool[g_context.backbuffer_depth].depth_target->ds[0]->Release();
-                _res_pool[g_context.backbuffer_depth].depth_target->tex.texture->Release();
-            }
-
-            if (_res_pool[g_context.backbuffer_colour].render_target->rt)
-            {
-                _res_pool[g_context.backbuffer_colour].render_target->rt[0]->Release();
-                _res_pool[g_context.backbuffer_colour].render_target->tex.texture->Release();
-            }
-
-            uint32_t w = pen_window.width;
-            uint32_t h = pen_window.height;
-
-            s_swap_chain->ResizeBuffers(0, w, h, DXGI_FORMAT_UNKNOWN, 0);
-
-            create_rtvs(g_context.backbuffer_colour, g_context.backbuffer_depth, w, h);
-
-            s_needs_resize = true;
-            s_resize_counter = 0;
-            g_window_resize = 0;
-        }
-        else
-        {
-            s_resize_counter++;
-        }
-
-        if (s_needs_resize && s_resize_counter > 5)
-        {
-            // recreate dynamic buffers
-            u32 num_man_rt = sb_count(s_managed_render_targets);
-            for (u32 i = 0; i < num_man_rt; ++i)
-            {
-                auto& rt = s_managed_render_targets[i];
-
-                release_render_target_internal(rt.resource_index);
-
-                renderer_create_render_target(rt.tcp, rt.resource_index, false);
-            }
-
-            s_needs_resize = 0;
-            s_resize_counter = 0;
-        }
 
         s_frame++;
 
@@ -778,7 +740,7 @@ namespace pen
             uav_desc.Buffer.NumElements = params.buffer_size / params.stride;
 
             CHECK_CALL(s_device->CreateUnorderedAccessView(_res_pool[resource_index].generic_buffer.buf, &uav_desc,
-                &_res_pool[resource_index].generic_buffer.uav));
+                                                           &_res_pool[resource_index].generic_buffer.uav));
 
             // srv if we need it
             D3D11_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
@@ -788,7 +750,7 @@ namespace pen
             srv_desc.BufferEx.NumElements = params.buffer_size / params.stride;
 
             CHECK_CALL(s_device->CreateShaderResourceView(_res_pool[resource_index].generic_buffer.buf, &srv_desc,
-                &_res_pool[resource_index].generic_buffer.srv));
+                                                          &_res_pool[resource_index].generic_buffer.srv));
         }
     }
 
@@ -890,12 +852,28 @@ namespace pen
         return 0;
     }
 
+    pen_inline bool is_array(u32 srv)
+    {
+        return srv == D3D_SRV_DIMENSION_TEXTURE2DARRAY || srv == D3D_SRV_DIMENSION_TEXTURECUBEARRAY ||
+               srv == D3D_SRV_DIMENSION_TEXTURECUBE;
+    }
+
+    pen_inline bool is_cube(u32 srv)
+    {
+        return srv == D3D_SRV_DIMENSION_TEXTURECUBEARRAY || srv == D3D_SRV_DIMENSION_TEXTURECUBE;
+    }
+
     void renderer_create_render_target_multi(const texture_creation_params& tcp, texture2d_internal* texture_container,
                                              ID3D11DepthStencilView*** dsv, ID3D11RenderTargetView*** rtv)
     {
         // create an empty texture
         D3D11_TEXTURE2D_DESC texture_desc;
         memcpy(&texture_desc, (void*)&tcp, sizeof(D3D11_TEXTURE2D_DESC));
+
+        if (tcp.collection_type == pen::TEXTURE_COLLECTION_CUBE || tcp.collection_type == pen::TEXTURE_COLLECTION_CUBE_ARRAY)
+        {
+            texture_desc.MiscFlags |= 0x4L; // resource misc texture cube
+        }
 
         u32  array_size = texture_desc.ArraySize;
         bool texture2dms = texture_desc.SampleDesc.Count > 1;
@@ -918,6 +896,8 @@ namespace pen
             srv_dimension = D3D_SRV_DIMENSION_TEXTURECUBE;
         else if (tcp.collection_type == pen::TEXTURE_COLLECTION_ARRAY)
             srv_dimension = D3D_SRV_DIMENSION_TEXTURE2DARRAY;
+        else if (tcp.collection_type == pen::TEXTURE_COLLECTION_CUBE_ARRAY)
+            srv_dimension = D3D_SRV_DIMENSION_TEXTURECUBEARRAY;
 
         if (texture_desc.BindFlags & D3D11_BIND_DEPTH_STENCIL)
         {
@@ -936,7 +916,7 @@ namespace pen
             ID3D11DepthStencilView** _dsv = *dsv;
 
             // Create the render target view.
-            if (srv_dimension != D3D_SRV_DIMENSION_TEXTURE2DARRAY)
+            if (!is_array(srv_dimension))
             {
                 // single rt
                 dsv_desc.ViewDimension = texture2dms ? D3D11_DSV_DIMENSION_TEXTURE2DMS : D3D11_DSV_DIMENSION_TEXTURE2D;
@@ -964,6 +944,13 @@ namespace pen
                     resource_view_desc.Texture2DArray.MipLevels = num_mips;
                     resource_view_desc.Texture2DArray.MostDetailedMip = 0;
                 }
+                else if (is_cube(srv_dimension))
+                {
+                    resource_view_desc.Texture2DArray.ArraySize = array_size / 6;
+                    resource_view_desc.Texture2DArray.FirstArraySlice = 0;
+                    resource_view_desc.Texture2DArray.MipLevels = num_mips;
+                    resource_view_desc.Texture2DArray.MostDetailedMip = 0;
+                }
             }
         }
         else if (texture_desc.BindFlags & D3D11_BIND_RENDER_TARGET)
@@ -982,7 +969,7 @@ namespace pen
             ID3D11RenderTargetView** _rtv = *rtv;
 
             // Create the render target view.
-            if (srv_dimension != D3D_SRV_DIMENSION_TEXTURE2DARRAY)
+            if (!is_array(srv_dimension))
             {
                 // single rt
                 rtv_desc.ViewDimension = texture2dms ? D3D11_RTV_DIMENSION_TEXTURE2DMS : D3D11_RTV_DIMENSION_TEXTURE2D;
@@ -1005,6 +992,13 @@ namespace pen
                 if (srv_dimension == D3D_SRV_DIMENSION_TEXTURE2DARRAY)
                 {
                     resource_view_desc.Texture2DArray.ArraySize = array_size;
+                    resource_view_desc.Texture2DArray.FirstArraySlice = 0;
+                    resource_view_desc.Texture2DArray.MipLevels = num_mips;
+                    resource_view_desc.Texture2DArray.MostDetailedMip = 0;
+                }
+                else if (is_cube(srv_dimension))
+                {
+                    resource_view_desc.Texture2DArray.ArraySize = array_size / 6;
                     resource_view_desc.Texture2DArray.FirstArraySlice = 0;
                     resource_view_desc.Texture2DArray.MipLevels = num_mips;
                     resource_view_desc.Texture2DArray.MostDetailedMip = 0;
@@ -1037,18 +1031,10 @@ namespace pen
         _res_pool[resource_index].render_target->format = (DXGI_FORMAT)tcp.format;
         _res_pool[resource_index].render_target->tcp = nullptr;
 
-        texture_creation_params _tcp = tcp;
-
-        if (_tcp.width == -1)
+        texture_creation_params _tcp = _renderer_tcp_resolve_ratio(tcp);
+        if (track)
         {
-            _tcp.width = pen_window.width / _tcp.height;
-            _tcp.height = pen_window.height / _tcp.height;
-
-            if (track)
-            {
-                managed_rt man_rt = {resource_index, tcp};
-                sb_push(s_managed_render_targets, man_rt);
-            }
+            _renderer_track_managed_render_target(tcp, resource_index);
         }
 
         // rt mip maps
@@ -1203,7 +1189,7 @@ namespace pen
         }
         else
         {
-            // texture 2d, arrays and cubemaps
+            // texture 2d, arrays and cubemaps, cubemap arrays
             D3D11_TEXTURE2D_DESC texture_desc;
             memcpy(&texture_desc, (void*)&tcp, sizeof(D3D11_TEXTURE2D_DESC));
 
@@ -1275,29 +1261,6 @@ namespace pen
 
             CHECK_CALL(s_device->CreateUnorderedAccessView(tex_res->resource, &uav_desc, &tex_res->uav));
         }
-
-        // reference for structured bufffers
-        /*
-		if ( descBuf.MiscFlags & D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS )
-		{
-			// This is a Raw Buffer
-
-			desc.Format = DXGI_FORMAT_R32_TYPELESS; // Format must be DXGI_FORMAT_R32_TYPELESS, when creating Raw Unordered Access View
-			desc.Buffer.Flags = D3D11_BUFFER_UAV_FLAG_RAW;
-			desc.Buffer.NumElements = descBuf.ByteWidth / 4; 
-		} 
-		else if ( descBuf.MiscFlags & D3D11_RESOURCE_MISC_BUFFER_STRUCTURED )
-		{
-			// This is a Structured Buffer
-
-			desc.Format = DXGI_FORMAT_UNKNOWN;      // Format must be must be DXGI_FORMAT_UNKNOWN, when creating a View of a Structured Buffer
-			desc.Buffer.NumElements = descBuf.ByteWidth / descBuf.StructureByteStride; 
-		} 
-		else
-		{
-			return E_INVALIDARG;
-		}
-		*/
     }
 
     void direct::renderer_create_sampler(const sampler_creation_params& scp, u32 resource_slot)
@@ -1395,7 +1358,8 @@ namespace pen
 
     void direct::renderer_set_viewport(const viewport& vp)
     {
-        s_immediate_context->RSSetViewports(1, (D3D11_VIEWPORT*)&vp);
+        viewport _vp = _renderer_resolve_viewport_ratio(vp);
+        s_immediate_context->RSSetViewports(1, (D3D11_VIEWPORT*)&_vp);
     }
 
     void direct::renderer_create_blend_state(const blend_creation_params& bcp, u32 resource_slot)
@@ -1413,7 +1377,8 @@ namespace pen
         for (u32 i = 0; i < bcp.num_render_targets; ++i)
         {
             memcpy(&bd.RenderTarget[i], (void*)&(bcp.render_targets[i]), sizeof(render_target_blend));
-			PEN_ASSERT(bcp.render_targets[i].render_target_write_mask >= 0xf); // 0xf is max value supported
+            //PEN_ASSERT(bcp.render_targets[i].render_target_write_mask >= 0xf); // 0xf is max value supported
+            min<u8>(bcp.render_targets[i].render_target_write_mask, 0xf);
         }
 
         CHECK_CALL(s_device->CreateBlendState(&bd, &_res_pool[resource_index].blend_state));
@@ -1598,25 +1563,9 @@ namespace pen
         _res_pool[blend_state].blend_state->Release();
     }
 
-    void release_render_target_internal(u32 render_target, bool remove_managed)
+    void release_render_target_internal(u32 render_target)
     {
-        if (remove_managed)
-        {
-            // remove from managed rt
-            managed_rt* erased = nullptr;
-
-            u32 num_man_rt = sb_count(s_managed_render_targets);
-            for (s32 i = num_man_rt - 1; i >= 0; --i)
-            {
-                if (s_managed_render_targets[i].resource_index == render_target)
-                    continue;
-
-                sb_push(erased, s_managed_render_targets[i]);
-            }
-
-            sb_free(s_managed_render_targets);
-            s_managed_render_targets = erased;
-        }
+        _renderer_untrack_managed_render_target(render_target);
 
         render_target_internal* rt = _res_pool[render_target].render_target;
 
@@ -1660,7 +1609,7 @@ namespace pen
 
     void direct::renderer_release_render_target(u32 render_target)
     {
-        release_render_target_internal(render_target, true);
+        release_render_target_internal(render_target);
     }
 
     void direct::renderer_release_input_layout(u32 input_layout)
@@ -1791,7 +1740,8 @@ namespace pen
 
     void direct::renderer_set_scissor_rect(const rect& r)
     {
-        const D3D11_RECT rd3d = {(LONG)r.left, (LONG)r.top, (LONG)r.right, (LONG)r.bottom};
+        rect             _r = _renderer_resolve_scissor_ratio(r);
+        const D3D11_RECT rd3d = {(LONG)_r.left, (LONG)_r.top, (LONG)_r.right, (LONG)_r.bottom};
         s_immediate_context->RSSetScissorRects(1, &rd3d);
     }
 
@@ -2037,6 +1987,7 @@ namespace pen
             sd.SampleDesc.Count = pen_window.sample_count;
             sd.SampleDesc.Quality = 0;
             sd.Windowed = TRUE;
+            sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
 
             hr = dxgiFactory->CreateSwapChain(s_device, &sd, &s_swap_chain);
         }
@@ -2102,10 +2053,10 @@ namespace pen
         s_renderer_info.caps |= PEN_CAPS_TEX_FORMAT_BC5;
         s_renderer_info.caps |= PEN_CAPS_TEX_FORMAT_BC6;
         s_renderer_info.caps |= PEN_CAPS_TEX_FORMAT_BC7;
-
         s_renderer_info.caps |= PEN_CAPS_GPU_TIMER;
         s_renderer_info.caps |= PEN_CAPS_DEPTH_CLAMP;
         s_renderer_info.caps |= PEN_CAPS_COMPUTE;
+        s_renderer_info.caps |= PEN_CAPS_TEXTURE_CUBE_ARRAY;
     }
 
     const renderer_info& renderer_get_info()

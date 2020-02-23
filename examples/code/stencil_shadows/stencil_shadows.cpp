@@ -5,12 +5,20 @@
 using namespace put;
 using namespace put::ecs;
 
-pen::window_creation_params pen_window{
-    1280,             // width
-    720,              // height
-    4,                // MSAA samples
-    "stencil_shadows" // window title / process name
-};
+namespace pen
+{
+    pen_creation_params pen_entry(int argc, char** argv)
+    {
+        pen::pen_creation_params p;
+        p.window_width = 1280;
+        p.window_height = 720;
+        p.window_title = "stencil_shadows";
+        p.window_sample_count = 4;
+        p.user_thread_function = user_entry;
+        p.flags = pen::e_pen_create_flags::renderer;
+        return p;
+    }
+} // namespace pen
 
 namespace
 {
@@ -80,7 +88,7 @@ void render_multi_pass_lights(const scene_view& view)
     u32        count = 0;
     for (u32 n = 0; n < scene->num_entities; ++n)
     {
-        if (!(scene->entities[n] & CMP_LIGHT))
+        if (!(scene->entities[n] & e_cmp::light))
             continue;
 
         u32 t = scene->lights[n].type;
@@ -94,17 +102,17 @@ void render_multi_pass_lights(const scene_view& view)
 
         switch (t)
         {
-            case LIGHT_TYPE_DIR:
+            case e_light_type::dir:
                 ld.pos_radius = vec4f(scene->lights[n].direction * 10000.0f, 0.0f);
                 ld.dir_cutoff = vec4f(scene->lights[n].direction, 0.0f);
                 ld.colour = vec4f(scene->lights[n].colour, 0.0f);
                 break;
-            case LIGHT_TYPE_POINT:
+            case e_light_type::point:
                 ld.pos_radius = vec4f(pos, scene->lights[n].radius);
                 ld.dir_cutoff = vec4f(scene->lights[n].direction, 0.0f);
                 ld.colour = vec4f(scene->lights[n].colour, 0.0f);
                 break;
-            case LIGHT_TYPE_SPOT:
+            case e_light_type::spot:
                 ld.pos_radius = vec4f(pos, scene->lights[n].radius);
                 ld.dir_cutoff = vec4f(-dc.world_matrix.get_column(1).xyz, scene->lights[n].cos_cutoff);
                 ld.colour = vec4f(scene->lights[n].colour, 0.0f);
@@ -277,7 +285,7 @@ void generate_edge_mesh(geometry_resource* gr, shadow_volume_edge** sve_out, geo
 void example_setup(ecs::ecs_scene* scene, camera& cam)
 {
     editor_set_transform_mode(e_transform_mode::physics);
-    
+
     put::scene_view_renderer svr_stencil_shadow_volumes;
     svr_stencil_shadow_volumes.name = "stencil_shadow_volumes";
     svr_stencil_shadow_volumes.id_name = PEN_HASH(svr_stencil_shadow_volumes.name.c_str());
@@ -310,56 +318,56 @@ void example_setup(ecs::ecs_scene* scene, camera& cam)
     scene->id_name[light] = PEN_HASH("front_light0");
     scene->lights[light].colour = vec3f(0.2f, 0.8f, 0.1f);
     scene->lights[light].direction = vec3f::one() * vec3f(1.0f, 0.7f, 1.0f);
-    scene->lights[light].type = LIGHT_TYPE_DIR;
+    scene->lights[light].type = e_light_type::dir;
     maths::xyz_to_azimuth_altitude(scene->lights[light].direction, scene->lights[light].azimuth,
                                    scene->lights[light].altitude);
     scene->transforms[light].translation = vec3f::zero();
     scene->transforms[light].rotation = quat();
     scene->transforms[light].scale = vec3f::one();
-    scene->entities[light] |= CMP_LIGHT;
-    scene->entities[light] |= CMP_TRANSFORM;
+    scene->entities[light] |= e_cmp::light;
+    scene->entities[light] |= e_cmp::transform;
 
     light = get_new_entity(scene);
     scene->names[light] = "front_light1";
     scene->id_name[light] = PEN_HASH("front_light1");
     scene->lights[light].colour = vec3f(0.8f, 0.2f, 0.2f);
     scene->lights[light].direction = vec3f::one() * vec3f(-1.0f, 0.7f, 1.0f);
-    scene->lights[light].type = LIGHT_TYPE_DIR;
+    scene->lights[light].type = e_light_type::dir;
     maths::xyz_to_azimuth_altitude(scene->lights[light].direction, scene->lights[light].azimuth,
                                    scene->lights[light].altitude);
     scene->transforms[light].translation = vec3f::zero();
     scene->transforms[light].rotation = quat();
     scene->transforms[light].scale = vec3f::one();
-    scene->entities[light] |= CMP_LIGHT;
-    scene->entities[light] |= CMP_TRANSFORM;
+    scene->entities[light] |= e_cmp::light;
+    scene->entities[light] |= e_cmp::transform;
 
     light = get_new_entity(scene);
     scene->names[light] = "front_light2";
     scene->id_name[light] = PEN_HASH("front_light2");
     scene->lights[light].colour = vec3f(0.1f, 0.2f, 0.8f);
     scene->lights[light].direction = vec3f::one() * vec3f(-1.0f, 0.7f, -1.0f);
-    scene->lights[light].type = LIGHT_TYPE_DIR;
+    scene->lights[light].type = e_light_type::dir;
     maths::xyz_to_azimuth_altitude(scene->lights[light].direction, scene->lights[light].azimuth,
                                    scene->lights[light].altitude);
     scene->transforms[light].translation = vec3f::zero();
     scene->transforms[light].rotation = quat();
     scene->transforms[light].scale = vec3f::one();
-    scene->entities[light] |= CMP_LIGHT;
-    scene->entities[light] |= CMP_TRANSFORM;
+    scene->entities[light] |= e_cmp::light;
+    scene->entities[light] |= e_cmp::transform;
 
     light = get_new_entity(scene);
     scene->names[light] = "front_light4";
     scene->id_name[light] = PEN_HASH("front_light4");
     scene->lights[light].colour = vec3f(0.6f, 0.1f, 0.8f);
     scene->lights[light].direction = vec3f::one() * vec3f(1.0f, 0.7f, -1.0f);
-    scene->lights[light].type = LIGHT_TYPE_DIR;
+    scene->lights[light].type = e_light_type::dir;
     maths::xyz_to_azimuth_altitude(scene->lights[light].direction, scene->lights[light].azimuth,
                                    scene->lights[light].altitude);
     scene->transforms[light].translation = vec3f::zero();
     scene->transforms[light].rotation = quat();
     scene->transforms[light].scale = vec3f::one();
-    scene->entities[light] |= CMP_LIGHT;
-    scene->entities[light] |= CMP_TRANSFORM;
+    scene->entities[light] |= e_cmp::light;
+    scene->entities[light] |= e_cmp::transform;
 
     // ground
     u32 ground = get_new_entity(scene);
@@ -367,7 +375,7 @@ void example_setup(ecs::ecs_scene* scene, camera& cam)
     scene->transforms[ground].translation = vec3f::zero();
     scene->transforms[ground].rotation = quat();
     scene->transforms[ground].scale = vec3f(30.0f, 1.0f, 30.0f);
-    scene->entities[ground] |= CMP_TRANSFORM;
+    scene->entities[ground] |= e_cmp::transform;
     scene->parents[ground] = ground;
     scene->physics_data[ground].rigid_body.shape = physics::e_shape::box;
     scene->physics_data[ground].rigid_body.mass = 0.0f;
@@ -400,7 +408,7 @@ void example_setup(ecs::ecs_scene* scene, camera& cam)
                 scene->transforms[new_prim].rotation = quat(rx, ry, rz);
                 scene->transforms[new_prim].scale = vec3f::one();
                 scene->transforms[new_prim].translation = cur_pos;
-                scene->entities[new_prim] |= CMP_TRANSFORM;
+                scene->entities[new_prim] |= e_cmp::transform;
                 scene->parents[new_prim] = new_prim;
                 instantiate_geometry(box, scene, new_prim);
                 instantiate_material(default_material, scene, new_prim);

@@ -2,12 +2,11 @@
 // Copyright 2014 - 2019 Alex Dixon.
 // License: https://github.com/polymonster/pmtech/blob/master/license.md
 
-#ifndef _memory_h
-#define _memory_h
-
 // Minimalist memory api wrapping up malloc and free.
 // It provides some very minor portability solutions between win32 and osx and linux.
 // Mostly it is here to intercept allocs, so at a later date custom allocation or tracking schemes could be used.
+
+#pragma once
 
 #include "pen.h"
 #include <stdio.h>
@@ -35,26 +34,26 @@ namespace pen
 {
     // Functions
 
-    void* memory_alloc(u32 size_bytes);
-    void* memory_alloc_align(u32 size_bytes, u32 alignment);
-    void* memory_realloc(void* mem, u32 size_bytes);
+    void* memory_alloc(size_t size_bytes);
+    void* memory_alloc_align(size_t size_bytes, size_t alignment);
+    void* memory_realloc(void* mem, size_t size_bytes);
     void  memory_free(void* mem);
     void  memory_free_align(void* mem);
-    void  memory_zero(void* dest, u32 size_bytes);
+    void  memory_zero(void* dest, size_t size_bytes);
 
     // Implementation
 
-    inline void* memory_alloc(u32 size_bytes)
+    inline void* memory_alloc(size_t size_bytes)
     {
         return malloc(size_bytes);
     }
 
-    inline void* memory_calloc(u32 count, u32 size_bytes)
+    inline void* memory_calloc(size_t count, size_t size_bytes)
     {
         return calloc(count, size_bytes);
     }
 
-    inline void* memory_realloc(void* mem, u32 size_bytes)
+    inline void* memory_realloc(void* mem, size_t size_bytes)
     {
         return realloc(mem, size_bytes);
     }
@@ -64,12 +63,12 @@ namespace pen
         free(mem);
     }
 
-    inline void memory_zero(void* dest, u32 size_bytes)
+    inline void memory_zero(void* dest, size_t size_bytes)
     {
         memset(dest, 0x00, size_bytes);
     }
 
-    inline void* memory_alloc_align(u32 size_bytes, u32 alignment)
+    inline void* memory_alloc_align(size_t size_bytes, size_t alignment)
     {
         void* mem;
         PEN_MEM_ALIGN_ALLOC(mem, alignment, size_bytes);
@@ -88,8 +87,5 @@ namespace pen
 void* operator new(std::size_t size, const std::nothrow_t& nothrow_value) THROW_NO_EXCEPT;
 void* operator new(size_t n) THROW_BAD_ALLOC;
 void* operator new[](size_t n) THROW_BAD_ALLOC;
-
-void operator delete[](void* p) THROW_NO_EXCEPT;
-void operator delete(void* p)THROW_NO_EXCEPT;
-
-#endif
+void  operator delete[](void* p) THROW_NO_EXCEPT;
+void  operator delete(void* p)THROW_NO_EXCEPT;

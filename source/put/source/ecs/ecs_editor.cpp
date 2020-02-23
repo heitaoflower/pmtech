@@ -7,86 +7,136 @@
 #include "ecs/ecs_utilities.h"
 
 #include "camera.h"
-#include "data_struct.h"
 #include "debug_render.h"
 #include "dev_ui.h"
+#include "physics/physics.h"
+#include "pmfx.h"
+#include "volume_generator.h"
+
+#include "data_struct.h"
 #include "hash.h"
 #include "input.h"
 #include "os.h"
 #include "pen_string.h"
-#include "physics/physics.h"
-#include "pmfx.h"
+#include "renderer_shared.h"
 #include "str_utilities.h"
 #include "timer.h"
-#include "volume_generator.h"
 
-extern pen::user_info pen_user_info;
+using namespace pen;
+using namespace put;
+using namespace ecs;
+
+namespace
+{
+    const hash_id ID_PICKING_BUFFER = PEN_HASH("picking");
+
+    const hash_id ID_PRIMITIVE[] = {PEN_HASH("quad"),   PEN_HASH("cube"),    PEN_HASH("cylinder"),
+                                    PEN_HASH("sphere"), PEN_HASH("capsule"), PEN_HASH("cone")};
+
+    const c8* k_camera_mode_names[] = {"Modelling", "Fly"};
+
+    namespace e_editor_actions
+    {
+        enum editor_actions_t
+        {
+            macro_begin = -1,
+            macro_end = -2,
+            undo = 0,
+            redo,
+            COUNT
+        };
+    }
+    typedef e_editor_actions::editor_actions_t editor_actions;
+
+    namespace e_picking_state
+    {
+        enum picking_state_t
+        {
+            ready,
+            single,
+            multi,
+            complete,
+            grabbed
+        };
+    }
+
+    namespace e_select_flags
+    {
+        enum select_flags_t
+        {
+            none,
+            widget_selected = 1 << 1
+        };
+    }
+
+    namespace e_camera_mode
+    {
+        enum camera_mode_t
+        {
+            modelling,
+            fly
+        };
+    }
+    typedef e_camera_mode::camera_mode_t camera_mode;
+
+    struct transform_undo
+    {
+        cmp_transform state;
+        u32           node_index;
+    };
+
+    struct picking_info
+    {
+        u32  result;
+        a_u8 ready;
+        u32  x, y;
+    };
+
+    struct model_view_controller
+    {
+        put::camera          main_camera;
+        bool                 invalidated = false;
+        put::camera_settings settings;
+        camera_mode          mode = e_camera_mode::modelling;
+        f32                  grid_cell_size;
+        f32                  grid_size;
+        Str                  current_working_scene = "";
+    };
+
+    struct node_state
+    {
+        void** components = nullptr;
+    };
+
+    struct editor_action
+    {
+        s32        node_index;
+        node_state action_state[e_editor_actions::COUNT];
+        f32        timer = 0.0f;
+    };
+    typedef pen::stack<editor_action> action_stack;
+
+    // to move into scene editor context
+    u32                   s_select_flags = 0;
+    picking_info          s_picking_info;
+    model_view_controller s_model_view_controller;
+    transform_mode        s_transform_mode = e_transform_mode::none;
+    action_stack          s_undo_stack;
+    action_stack          s_redo_stack;
+    editor_action*        s_editor_nodes = nullptr;
+    bool                  s_editor_enabled = true;
+    bool                  s_editor_enable_camera = true;
+} // namespace
 
 namespace put
 {
     namespace ecs
     {
-        static const hash_id k_primitives[] = {PEN_HASH("quad"),   PEN_HASH("cube"),    PEN_HASH("cylinder"),
-                                               PEN_HASH("sphere"), PEN_HASH("capsule"), PEN_HASH("cone")};
-
-        struct transform_undo
-        {
-            cmp_transform state;
-            u32           node_index;
-        };
-
-        static const hash_id ID_PICKING_BUFFER = PEN_HASH("picking");
-
-        struct picking_info
-        {
-            u32  result;
-            a_u8 ready;
-            u32  x, y;
-        };
-        static picking_info s_picking_info;
-
-        enum e_picking_state : u32
-        {
-            PICKING_READY = 0,
-            PICKING_SINGLE = 1,
-            PICKING_MULTI = 2,
-            PICKING_COMPLETE = 3,
-            PICKING_GRABBED = 4
-        };
-
-        enum e_select_flags : u32
-        {
-            NONE = 0,
-            WIDGET_SELECTED = 1,
-        };
-        static u32 s_select_flags = 0;
-
-        enum e_camera_mode : s32
-        {
-            CAMERA_MODELLING = 0,
-            CAMERA_FLY = 1
-        };
-
-        const c8* camera_mode_names[] = {"Modelling", "Fly"};
-
-        struct model_view_controller
-        {
-            put::camera          main_camera;
-            bool                 invalidated = false;
-            put::camera_settings settings;
-            e_camera_mode        camera_mode = CAMERA_MODELLING;
-            f32                  grid_cell_size;
-            f32                  grid_size;
-            Str                  current_working_scene = "";
-        };
-        static model_view_controller s_model_view_controller;
-        
-        static transform_mode s_transform_mode = e_transform_mode::none;
         void editor_set_transform_mode(transform_mode mode)
         {
             s_transform_mode = mode;
         }
-        
+
         bool shortcut_key(u32 key)
         {
             u32 flags = dev_ui::want_capture();
@@ -113,13 +163,13 @@ namespace put
 
             bool has_focus = dev_ui::want_capture() == dev_ui::e_io_capture::none;
 
-            switch (s_model_view_controller.camera_mode)
+            switch (s_model_view_controller.mode)
             {
-                case CAMERA_MODELLING:
+                case e_camera_mode::modelling:
                     put::camera_update_modelling(cam, has_focus, s_model_view_controller.settings);
                     s_model_view_controller.main_camera = *cam;
                     break;
-                case CAMERA_FLY:
+                case e_camera_mode::fly:
                     put::camera_update_fly(cam, has_focus, s_model_view_controller.settings);
                     s_model_view_controller.main_camera = *cam;
                     break;
@@ -132,26 +182,15 @@ namespace put
 
         void view_ui(ecs_scene* scene, bool* opened)
         {
-            static const c8* dd_names[] ={
-                "Hide Scene",
-                "Hide Debug",
-                "Selected Node",
-                "Grid",
-                "Matrices",
-                "Bones",
-                "AABB",
-                "Lights",
-                "Physics",
-                "Selected Children",
-                "Debug Geometry",
-                "Camera / Frustum"
-            };
+            static const c8* dd_names[] = {
+                "Hide Scene", "Hide Debug", "Selected Node",     "Grid",           "Matrices",        "Bones", "AABB",
+                "Lights",     "Physics",    "Selected Children", "Debug Geometry", "Camera / Frustum"};
             static_assert(sizeof(dd_names) / sizeof(dd_names[0]) == e_scene_view_flags::COUNT, "mismatched");
-            
+
             if (ImGui::Begin("View", opened, ImGuiWindowFlags_AlwaysAutoResize))
             {
                 for (s32 i = 0; i < e_scene_view_flags::COUNT; ++i)
-                    ImGui::CheckboxFlags(dd_names[i], &scene->view_flags, 1<<i);
+                    ImGui::CheckboxFlags(dd_names[i], &scene->view_flags, 1 << i);
 
                 if (ImGui::CollapsingHeader("Grid Options"))
                 {
@@ -177,12 +216,12 @@ namespace put
             scene->id_name[light] = PEN_HASH("front_light");
             scene->lights[light].colour = vec3f::one();
             scene->lights[light].direction = vec3f::one();
-            scene->lights[light].type = LIGHT_TYPE_DIR;
+            scene->lights[light].type = e_light_type::dir;
             scene->transforms[light].translation = vec3f::zero();
             scene->transforms[light].rotation = quat();
             scene->transforms[light].scale = vec3f::one();
-            scene->entities[light] |= CMP_LIGHT;
-            scene->entities[light] |= CMP_TRANSFORM;
+            scene->entities[light] |= e_cmp::light;
+            scene->entities[light] |= e_cmp::transform;
             instantiate_model_cbuffer(scene, light);
 
             sb_clear(scene->selection_list);
@@ -257,10 +296,10 @@ namespace put
 
             s32 master = scene->selection_list[0];
 
-            if (scene->entities[master] & CMP_MASTER_INSTANCE)
+            if (scene->entities[master] & e_cmp::master_instance)
                 return;
 
-            scene->entities[master] |= CMP_MASTER_INSTANCE;
+            scene->entities[master] |= e_cmp::master_instance;
 
             scene->master_instances[master].num_instances = selection_size;
             scene->master_instances[master].instance_stride = sizeof(cmp_draw_call);
@@ -324,7 +363,7 @@ namespace put
 
                 s32 nn = start;
                 for (int i = 0; i < sel_count; ++i)
-                    clone_entity(scene, scene->selection_list[i], nn++, start, CLONE_MOVE, vec3f::zero(), "");
+                    clone_entity(scene, scene->selection_list[i], nn++, start, e_clone_mode::move, vec3f::zero(), "");
             }
 
             scene->flags |= e_scene_flags::invalidate_scene_tree;
@@ -337,7 +376,7 @@ namespace put
             for (u32 i = 0; i < sel_count; ++i)
             {
                 u32 si = scene->selection_list[i];
-                scene->state_flags[si] &= ~SF_SELECTED;
+                scene->state_flags[si] &= ~e_state::selected;
             }
 
             sb_clear(scene->selection_list);
@@ -388,9 +427,9 @@ namespace put
                 return;
 
             if (select_mode == e_select_mode::remove)
-                scene->state_flags[index] &= ~SF_SELECTED;
+                scene->state_flags[index] &= ~e_state::selected;
             else
-                scene->state_flags[index] |= SF_SELECTED;
+                scene->state_flags[index] |= e_state::selected;
         }
 
         void delete_selection(ecs_scene* scene)
@@ -435,23 +474,22 @@ namespace put
         void picking_read_back(void* p_data, u32 row_pitch, u32 depth_pitch, u32 block_size)
         {
             s_picking_info.result = *((u32*)(((u8*)p_data) + s_picking_info.y * row_pitch + s_picking_info.x * block_size));
-
             s_picking_info.ready = 1;
         }
 
         void picking_update(ecs_scene* scene, const camera* cam)
         {
-            static u32 picking_state = PICKING_READY;
+            static u32 picking_state = e_picking_state::ready;
             static u32 picking_result = (-1);
 
             if (dev_ui::want_capture() & dev_ui::e_io_capture::mouse)
                 return;
 
-            if (picking_state == PICKING_SINGLE)
+            if (picking_state == e_picking_state::single)
             {
                 if (s_picking_info.ready)
                 {
-                    picking_state = PICKING_READY;
+                    picking_state = e_picking_state::ready;
                     picking_result = s_picking_info.result;
 
                     add_selection(scene, picking_result);
@@ -462,8 +500,10 @@ namespace put
                 return;
             }
 
+            s32 w, h;
+            pen::window_get_size(w, h);
             pen::mouse_state ms = pen::input_get_mouse_state();
-            f32              corrected_y = pen_window.height - ms.y;
+            f32              corrected_y = h - ms.y;
 
             static s32   drag_timer = 0;
             static vec2f drag_start;
@@ -496,7 +536,7 @@ namespace put
 
             if (!ms.buttons[PEN_MOUSE_L])
             {
-                if (picking_state == PICKING_MULTI)
+                if (picking_state == e_picking_state::multi)
                 {
                     u32 pm = e_select_mode::normal;
                     if (!pen::input_is_key_down(PK_CONTROL) && !pen::input_is_key_down(PK_SHIFT))
@@ -504,7 +544,7 @@ namespace put
                         // unflag current selected
                         u32 sls = sb_count(scene->selection_list);
                         for (u32 i = 0; i < sls; ++i)
-                            scene->state_flags[scene->selection_list[i]] &= ~SF_SELECTED;
+                            scene->state_flags[scene->selection_list[i]] &= ~e_state::selected;
 
                         sb_clear(scene->selection_list);
 
@@ -513,10 +553,10 @@ namespace put
 
                     for (s32 node = 0; node < scene->num_entities; ++node)
                     {
-                        if (!(scene->entities[node] & CMP_ALLOCATED))
+                        if (!(scene->entities[node] & e_cmp::allocated))
                             continue;
 
-                        if (!(scene->entities[node] & CMP_GEOMETRY))
+                        if (!(scene->entities[node] & e_cmp::geometry))
                             continue;
 
                         bool selected = true;
@@ -545,7 +585,7 @@ namespace put
                     s32 pos = 0;
                     for (s32 node = 0; node < scene->num_entities; ++node)
                     {
-                        if (scene->state_flags[node] & SF_SELECTED)
+                        if (scene->state_flags[node] & e_state::selected)
                             scene->selection_list[pos++] = node;
                     }
 
@@ -558,7 +598,7 @@ namespace put
                         dev_console_log("selected index %i", scene->selection_list[i]);
                     }
 
-                    picking_state = PICKING_READY;
+                    picking_state = e_picking_state::ready;
                 }
 
                 drag_timer = 0;
@@ -596,13 +636,13 @@ namespace put
 
                 if (mag(max - min) < 6.0)
                 {
-                    picking_state = PICKING_SINGLE;
+                    picking_state = e_picking_state::single;
 
                     const pmfx::render_target* rt = pmfx::get_render_target(ID_PICKING_BUFFER);
 
                     if (!rt)
                     {
-                        picking_state = PICKING_READY;
+                        picking_state = e_picking_state::ready;
                         return;
                     }
 
@@ -628,10 +668,11 @@ namespace put
 
                     if (!invalid_quad)
                     {
-                        picking_state = PICKING_MULTI;
+                        picking_state = e_picking_state::multi;
 
                         // todo this should really be passed in, incase we want non window sized viewports
-                        vec2i vpi = vec2i(pen_window.width, pen_window.height);
+                        vec2i vpi;
+                        pen::window_get_size(vpi.x, vpi.y);
 
                         for (s32 i = 0; i < 4; ++i)
                         {
@@ -651,39 +692,12 @@ namespace put
                 if (p == n)
                     continue;
 
-                if (scene->state_flags[p] & SF_SELECTED || scene->state_flags[p] & SF_CHILD_SELECTED)
-                    scene->state_flags[n] |= SF_CHILD_SELECTED;
+                if (scene->state_flags[p] & e_state::selected || scene->state_flags[p] & e_state::child_selected)
+                    scene->state_flags[n] |= e_state::child_selected;
             }
         }
 
         // undoable / redoable actions
-        enum e_editor_actions
-        {
-            MACRO_BEGIN = -1,
-            MACRO_END = -2,
-            UNDO = 0,
-            REDO,
-            NUM_ACTIONS
-        };
-
-        struct node_state
-        {
-            void** components = nullptr;
-        };
-
-        struct editor_action
-        {
-            s32        node_index;
-            node_state action_state[NUM_ACTIONS];
-            f32        timer = 0.0f;
-        };
-
-        typedef pen::stack<editor_action> action_stack;
-
-        static action_stack   k_undo_stack;
-        static action_stack   k_redo_stack;
-        static editor_action* k_editor_nodes = nullptr;
-
         void free_node_state_mem(ecs_scene* scene, node_state& ns)
         {
             if (!ns.components)
@@ -697,19 +711,19 @@ namespace put
             ns.components = nullptr;
         }
 
-        void store_node_state(ecs_scene* scene, u32 node_index, e_editor_actions action)
+        void store_node_state(ecs_scene* scene, u32 node_index, editor_actions action)
         {
             static const f32 undo_push_timer = 33.0f;
-            node_state&      ns = k_editor_nodes[node_index].action_state[action];
+            node_state&      ns = s_editor_nodes[node_index].action_state[action];
             u32              num = scene->num_components;
 
-            if (action == UNDO)
+            if (action == e_editor_actions::undo)
                 if (ns.components)
                     return;
 
-            if (action == REDO)
+            if (action == e_editor_actions::redo)
             {
-                node_state& us = k_editor_nodes[node_index].action_state[UNDO];
+                node_state& us = s_editor_nodes[node_index].action_state[e_editor_actions::undo];
 
                 u32 diff = 0;
                 for (u32 i = 0; i < num; ++i)
@@ -738,7 +752,7 @@ namespace put
                 }
             }
 
-            k_editor_nodes[node_index].timer = undo_push_timer;
+            s_editor_nodes[node_index].timer = undo_push_timer;
 
             if (!ns.components)
             {
@@ -795,14 +809,14 @@ namespace put
                 memcpy(cmp[node_index], ns.components[i], cmp.size);
             }
 
-            node_state& us = k_editor_nodes[node_index].action_state[UNDO];
-            node_state& rs = k_editor_nodes[node_index].action_state[REDO];
+            node_state& us = s_editor_nodes[node_index].action_state[e_editor_actions::undo];
+            node_state& rs = s_editor_nodes[node_index].action_state[e_editor_actions::redo];
 
             free_node_state_mem(scene, us);
             free_node_state_mem(scene, rs);
         }
 
-        void restore_from_stack(ecs_scene* scene, action_stack& stack, action_stack& reverse, e_editor_actions action)
+        void restore_from_stack(ecs_scene* scene, action_stack& stack, action_stack& reverse, editor_actions action)
         {
             if (stack.size() <= 0)
                 return;
@@ -822,7 +836,7 @@ namespace put
                     continue;
                 }
 
-                if (scene->state_flags[ua.node_index] & SF_SELECTED)
+                if (scene->state_flags[ua.node_index] & e_state::selected)
                     sb_clear(scene->selection_list);
 
                 restore_node_state(scene, ua.action_state[action], ua.node_index);
@@ -831,57 +845,57 @@ namespace put
 
         void undo(ecs_scene* scene)
         {
-            restore_from_stack(scene, k_undo_stack, k_redo_stack, UNDO);
+            restore_from_stack(scene, s_undo_stack, s_redo_stack, e_editor_actions::undo);
         }
 
         void redo(ecs_scene* scene)
         {
-            restore_from_stack(scene, k_redo_stack, k_undo_stack, REDO);
+            restore_from_stack(scene, s_redo_stack, s_undo_stack, e_editor_actions::redo);
         }
 
         void update_undo_stack(ecs_scene* scene, f32 dt)
         {
             // resize buffers
-            if (!k_editor_nodes || sb_count(k_editor_nodes) < scene->soa_size)
+            if (!s_editor_nodes || sb_count(s_editor_nodes) < scene->soa_size)
             {
-                stb__sbgrow(k_editor_nodes, scene->soa_size);
-                stb__sbm(k_editor_nodes) = scene->num_entities;
-                stb__sbn(k_editor_nodes) = scene->soa_size;
+                stb__sbgrow(s_editor_nodes, scene->soa_size);
+                stb__sbm(s_editor_nodes) = scene->num_entities;
+                stb__sbn(s_editor_nodes) = scene->soa_size;
             }
 
             static editor_action macro_begin;
             static editor_action macro_end;
 
-            macro_begin.node_index = MACRO_BEGIN;
-            macro_end.node_index = MACRO_END;
+            macro_begin.node_index = e_editor_actions::macro_begin;
+            macro_end.node_index = e_editor_actions::macro_end;
 
             bool first_item = true;
 
             for (u32 i = 0; i < scene->soa_size; ++i)
             {
-                if (k_editor_nodes[i].action_state[REDO].components)
+                if (s_editor_nodes[i].action_state[e_editor_actions::redo].components)
                 {
-                    if (k_editor_nodes[i].timer <= 0.0f)
+                    if (s_editor_nodes[i].timer <= 0.0f)
                     {
                         if (first_item)
                         {
-                            k_redo_stack.clear();
-                            k_undo_stack.push(macro_end);
+                            s_redo_stack.clear();
+                            s_undo_stack.push(macro_end);
                             first_item = false;
                         }
 
-                        k_editor_nodes[i].node_index = i;
-                        k_undo_stack.push(k_editor_nodes[i]);
-                        k_editor_nodes[i].action_state[UNDO].components = nullptr;
-                        k_editor_nodes[i].action_state[REDO].components = nullptr;
+                        s_editor_nodes[i].node_index = i;
+                        s_undo_stack.push(s_editor_nodes[i]);
+                        s_editor_nodes[i].action_state[e_editor_actions::undo].components = nullptr;
+                        s_editor_nodes[i].action_state[e_editor_actions::redo].components = nullptr;
                     }
 
-                    k_editor_nodes[i].timer -= dt * 0.1f;
+                    s_editor_nodes[i].timer -= dt * 0.1f;
                 }
             }
 
             if (!first_item)
-                k_undo_stack.push(macro_begin);
+                s_undo_stack.push(macro_begin);
 
             // undo / redo
             static bool debounce_undo = false;
@@ -1005,7 +1019,7 @@ namespace put
                 {
                     for (u32 i = 0; i < scene->num_entities; ++i)
                     {
-                        scene->state_flags[i] |= SF_HIDDEN;
+                        scene->state_flags[i] |= e_state::hidden;
                     }
                 }
 
@@ -1013,7 +1027,7 @@ namespace put
                 {
                     for (u32 i = 0; i < scene->num_entities; ++i)
                     {
-                        scene->state_flags[i] &= ~SF_HIDDEN;
+                        scene->state_flags[i] &= ~e_state::hidden;
                     }
                 }
 
@@ -1023,8 +1037,8 @@ namespace put
                     {
                         for (u32 i = 0; i < scene->num_entities; ++i)
                         {
-                            if (scene->state_flags[i] & SF_SELECTED)
-                                scene->state_flags[i] |= SF_HIDDEN;
+                            if (scene->state_flags[i] & e_state::selected)
+                                scene->state_flags[i] |= e_state::hidden;
                         }
                     }
 
@@ -1032,8 +1046,8 @@ namespace put
                     {
                         for (u32 i = 0; i < scene->num_entities; ++i)
                         {
-                            if (!(scene->state_flags[i] & SF_SELECTED))
-                                scene->state_flags[i] |= SF_HIDDEN;
+                            if (!(scene->state_flags[i] & e_state::selected))
+                                scene->state_flags[i] |= e_state::hidden;
                         }
                     }
                 }
@@ -1042,9 +1056,7 @@ namespace put
             }
         }
 
-        static bool s_editor_enabled = true;
-        static bool s_editor_enable_camera = true;
-        void        editor_update(ecs_controller& ecsc, ecs_scene* scene, f32 dt)
+        void editor_update(ecs_controller& ecsc, ecs_scene* scene, f32 dt)
         {
             if (!ecsc.camera)
                 return;
@@ -1115,10 +1127,10 @@ namespace put
                 bool co = dev_ui::is_console_open();
                 ImGui::MenuItem("Console", nullptr, &co);
                 dev_ui::show_console(co);
-                
+
                 ImGui::MenuItem("Settings", nullptr, &settings_open);
                 ImGui::MenuItem("Dev", nullptr, &dev_open);
-                
+
                 ImGui::EndMenu();
             }
 
@@ -1157,9 +1169,9 @@ namespace put
                 // reset physics positions
                 for (s32 i = 0; i < scene->num_entities; ++i)
                 {
-                    if (scene->entities[i] & CMP_PHYSICS)
+                    if (scene->entities[i] & e_cmp::physics)
                     {
-                        if (scene->physics_data[i].type != PHYSICS_TYPE_RIGID_BODY)
+                        if (scene->physics_data[i].type != e_physics_type::rigid_body)
                             continue;
 
                         vec3f t = scene->physics_data[i].rigid_body.position;
@@ -1170,11 +1182,11 @@ namespace put
                         scene->transforms[i].translation = t;
                         scene->transforms[i].rotation = q;
 
-                        scene->entities[i] |= CMP_TRANSFORM;
+                        scene->entities[i] |= e_cmp::transform;
 
                         // reset velocity
-                        physics::set_v3(scene->physics_handles[i], vec3f::zero(), physics::CMD_SET_LINEAR_VELOCITY);
-                        physics::set_v3(scene->physics_handles[i], vec3f::zero(), physics::CMD_SET_ANGULAR_VELOCITY);
+                        physics::set_v3(scene->physics_handles[i], vec3f::zero(), physics::e_cmd::set_linear_velocity);
+                        physics::set_v3(scene->physics_handles[i], vec3f::zero(), physics::e_cmd::set_angular_velocity);
                     }
                 }
             }
@@ -1308,7 +1320,8 @@ namespace put
 
             if (open_open)
             {
-                const c8* import = put::dev_ui::file_browser(open_open, dev_ui::e_file_browser_flags::open, 3, "**.pmm", "**.pms", "**.pmv");
+                const c8* import =
+                    put::dev_ui::file_browser(open_open, dev_ui::e_file_browser_flags::open, 3, "**.pmm", "**.pms", "**.pmv");
 
                 if (import)
                 {
@@ -1349,8 +1362,7 @@ namespace put
             {
                 if (ImGui::Begin("Camera", &open_camera_menu))
                 {
-                    ImGui::Combo("Camera Mode", (s32*)&s_model_view_controller.camera_mode, (const c8**)&camera_mode_names,
-                                 2);
+                    ImGui::Combo("Camera Mode", (s32*)&s_model_view_controller.mode, (const c8**)&k_camera_mode_names, 2);
 
                     if (ImGui::SliderFloat("FOV", &s_model_view_controller.main_camera.fov, 10, 180))
                         dev_ui::set_program_preference("camera_fov", s_model_view_controller.main_camera.fov);
@@ -1416,7 +1428,7 @@ namespace put
 
             // disable selection when we are doing something else
             static bool disable_picking = false;
-            if (pen::input_key(PK_MENU) || pen::input_key(PK_COMMAND) || (s_select_flags & WIDGET_SELECTED) ||
+            if (pen::input_key(PK_MENU) || pen::input_key(PK_COMMAND) || (s_select_flags & e_select_flags::widget_selected) ||
                 (s_transform_mode == e_transform_mode::physics))
             {
                 disable_picking = true;
@@ -1476,7 +1488,7 @@ namespace put
             physics::constraint_params& preview_constraint = s_physics_preview.params.constraint;
             s32                         constraint_type = preview_constraint.type - 1;
 
-            s_physics_preview.params.type = PHYSICS_TYPE_CONSTRAINT;
+            s_physics_preview.params.type = e_physics_type::constraint;
 
             ImGui::Combo("Constraint##Physics", (s32*)&constraint_type, "Six DOF\0Hinge\0Point to Point\0", 7);
 
@@ -1503,7 +1515,7 @@ namespace put
             std::vector<const c8*> rb_names;
             for (s32 i = 0; i < scene->num_entities; ++i)
             {
-                if (scene->entities[i] & CMP_PHYSICS)
+                if (scene->entities[i] & e_cmp::physics)
                 {
                     rb_names.push_back(scene->names[i].c_str());
                     index_lookup.push_back(scene->physics_handles[i]);
@@ -1528,7 +1540,7 @@ namespace put
                     {
                         u32 i = scene->selection_list[s];
 
-                        if (scene->entities[i] & CMP_CONSTRAINT)
+                        if (scene->entities[i] & e_cmp::constraint)
                             continue;
 
                         scene->physics_data[i].constraint = preview_constraint;
@@ -1579,7 +1591,7 @@ namespace put
             {
                 u32 i = scene->selection_list[s];
 
-                if (!(scene->entities[i] & CMP_PHYSICS))
+                if (!(scene->entities[i] & e_cmp::physics))
                 {
                     button_text = "Add";
                     break;
@@ -1595,7 +1607,7 @@ namespace put
                     scene->physics_data[i].rigid_body = s_physics_preview.params.rigid_body;
                     scene->physics_offset[i].translation = s_physics_preview.offset.translation;
 
-                    if (!(scene->entities[i] & CMP_PHYSICS))
+                    if (!(scene->entities[i] & e_cmp::physics))
                         instantiate_rigid_body(scene, i);
 
                     s_physics_preview.params.rigid_body = scene->physics_data[i].rigid_body;
@@ -1630,7 +1642,7 @@ namespace put
                 {
                     u32 i = scene->selection_list[s];
 
-                    if (!(scene->entities[i] & CMP_PHYSICS))
+                    if (!(scene->entities[i] & e_cmp::physics))
                     {
                         del_button = false;
                         break;
@@ -1658,12 +1670,12 @@ namespace put
 
                 s_physics_preview.params.type = physics_type;
 
-                if (physics_type == PHYSICS_TYPE_RIGID_BODY)
+                if (physics_type == e_physics_type::rigid_body)
                 {
                     // rb
                     scene_rigid_body_ui(scene);
                 }
-                else if (physics_type == PHYSICS_TYPE_CONSTRAINT)
+                else if (physics_type == e_physics_type::constraint)
                 {
                     // constraint
                     scene_constraint_ui(scene);
@@ -1686,7 +1698,7 @@ namespace put
             // geom
             if (ImGui::CollapsingHeader("Geometry"))
             {
-                if (scene->entities[selected_index] & CMP_GEOMETRY)
+                if (scene->entities[selected_index] & e_cmp::geometry)
                 {
                     ImGui::PushID("geom");
 
@@ -1704,13 +1716,13 @@ namespace put
 
                 static s32 primitive_type = -1;
                 ImGui::Combo("Shape##Primitive", (s32*)&primitive_type, "Quad\0Box\0Cylinder\0Sphere\0Capsule\0Cone\0",
-                             PEN_ARRAY_SIZE(k_primitives));
+                             PEN_ARRAY_SIZE(ID_PRIMITIVE));
 
                 if (ImGui::Button("Add Primitive") && primitive_type > -1)
                 {
                     iv = true;
 
-                    geometry_resource* gr = get_geometry_resource(k_primitives[primitive_type]);
+                    geometry_resource* gr = get_geometry_resource(ID_PRIMITIVE[primitive_type]);
 
                     instantiate_geometry(gr, scene, selected_index);
 
@@ -1722,7 +1734,7 @@ namespace put
 
                     instantiate_model_cbuffer(scene, selected_index);
 
-                    scene->entities[selected_index] |= CMP_TRANSFORM;
+                    scene->entities[selected_index] |= e_cmp::transform;
                 }
             }
 
@@ -1741,7 +1753,7 @@ namespace put
             for (u32 i = 0; i < num_selected; ++i)
             {
                 u32 s = scene->selection_list[i];
-                if (scene->state_flags[s] & SF_HIDDEN)
+                if (scene->state_flags[s] & e_state::hidden)
                     visible = false;
             }
 
@@ -1752,11 +1764,11 @@ namespace put
                     u32 s = scene->selection_list[i];
                     if (!visible)
                     {
-                        scene->state_flags[s] |= SF_HIDDEN;
+                        scene->state_flags[s] |= e_state::hidden;
                     }
                     else
                     {
-                        scene->state_flags[s] &= ~SF_HIDDEN;
+                        scene->state_flags[s] &= ~e_state::hidden;
                     }
                 }
             }
@@ -1864,7 +1876,7 @@ namespace put
 
                 if (perform_transform)
                 {
-                    scene->entities[selected_index] |= CMP_TRANSFORM;
+                    scene->entities[selected_index] |= e_cmp::transform;
                 }
 
                 apply_transform_to_selection(scene, vec3f::zero());
@@ -1902,7 +1914,7 @@ namespace put
                 return false;
 
             u32 selected_index = scene->selection_list[0];
-            if (!(scene->entities[selected_index] & CMP_MATERIAL))
+            if (!(scene->entities[selected_index] & e_cmp::material))
                 return false;
 
             if (!ImGui::CollapsingHeader("Material"))
@@ -2070,6 +2082,7 @@ namespace put
 
         void scene_anim_ui(ecs_scene* scene)
         {
+#if 0
             if (sb_count(scene->selection_list) != 1)
                 return;
 
@@ -2146,6 +2159,7 @@ namespace put
                     ImGui::Separator();
                 }
             }
+#endif
         }
 
         void scene_light_ui(ecs_scene* scene)
@@ -2161,7 +2175,7 @@ namespace put
             {
                 cmp_light& snl = scene->lights[selected_index];
 
-                if (scene->entities[selected_index] & CMP_LIGHT)
+                if (scene->entities[selected_index] & e_cmp::light)
                 {
                     bool changed = ImGui::Combo("Type", (s32*)&scene->lights[selected_index].type,
                                                 "Directional\0Point\0Spot\0Area\0Area Ex\0", 4);
@@ -2175,17 +2189,17 @@ namespace put
 
                     switch (scene->lights[selected_index].type)
                     {
-                        case LIGHT_TYPE_DIR:
+                        case e_light_type::dir:
                             ImGui::SliderAngle("Azimuth", &snl.azimuth);
                             ImGui::SliderAngle("Altitude", &snl.altitude);
                             break;
 
-                        case LIGHT_TYPE_POINT:
+                        case e_light_type::point:
                             edited |= ImGui::SliderFloat("Radius##slider", &snl.radius, 0.0f, 100.0f);
                             edited |= ImGui::InputFloat("Radius##input", &snl.radius);
                             break;
 
-                        case LIGHT_TYPE_SPOT:
+                        case e_light_type::spot:
                             edited |= ImGui::SliderFloat("Cos Cutoff", &snl.cos_cutoff, 0.0f, 1.0f);
                             edited |= ImGui::SliderFloat("Range", &snl.radius, 0.0f, 100.0f);
                             edited |= ImGui::InputFloat("Falloff", &snl.spot_falloff, 0.01f);
@@ -2194,11 +2208,11 @@ namespace put
                             snl.spot_falloff = max(snl.spot_falloff, 0.001f);
                             break;
 
-                        case LIGHT_TYPE_AREA:
+                        case e_light_type::area:
                             if (changed)
                                 instantiate_area_light(scene, selected_index);
                             break;
-                        case LIGHT_TYPE_AREA_EX:
+                        case e_light_type::area_ex:
                         {
                             if (changed)
                             {
@@ -2290,29 +2304,29 @@ namespace put
             if (ImGui::CollapsingHeader("Shadow Caster"))
             {
                 s32 caster_type = 0;
-                if (scene->entities[si] & CMP_SDF_SHADOW)
+                if (scene->entities[si] & e_cmp::sdf_shadow)
                 {
                     caster_type = 2;
                 }
                 else
                 {
-                    if (scene->entities[si] & CMP_GEOMETRY)
+                    if (scene->entities[si] & e_cmp::geometry)
                         caster_type = 1;
 
-                    if (scene->state_flags[si] & SF_NO_SHADOW)
+                    if (scene->state_flags[si] & e_state::no_shadow)
                         caster_type = 0;
                 }
 
                 if (ImGui::Combo("Shadow Caster", &caster_type, "None\0Geometry\0Signed Distance Field\0"))
                 {
                     if (caster_type == 0)
-                        scene->state_flags[si] |= SF_NO_SHADOW;
+                        scene->state_flags[si] |= e_state::no_shadow;
 
                     if (caster_type > 0)
-                        scene->state_flags[si] &= SF_NO_SHADOW;
+                        scene->state_flags[si] &= e_state::no_shadow;
 
                     if (caster_type == 2)
-                        scene->entities[si] |= CMP_SDF_SHADOW;
+                        scene->entities[si] |= e_cmp::sdf_shadow;
                 }
 
                 if (caster_type == CAST_SDF)
@@ -2324,7 +2338,8 @@ namespace put
 
                     if (s_file_browser_open)
                     {
-                        const c8* file = dev_ui::file_browser(s_file_browser_open, dev_ui::e_file_browser_flags::open, 1, "**.pmv");
+                        const c8* file =
+                            dev_ui::file_browser(s_file_browser_open, dev_ui::e_file_browser_flags::open, 1, "**.pmv");
 
                         if (file)
                             instantiate_sdf_shadow(file, scene, si);
@@ -2340,11 +2355,11 @@ namespace put
                 if (ImGui::Button(ICON_FA_PLUS))
                 {
                     u32 ni = ecs::get_next_entity(scene);
-                    store_node_state(scene, ni, UNDO);
+                    store_node_state(scene, ni, e_editor_actions::undo);
 
                     u32 nn = ecs::get_new_entity(scene);
 
-                    scene->entities[nn] |= CMP_ALLOCATED;
+                    scene->entities[nn] |= e_cmp::allocated;
 
                     scene->names[nn] = "node_";
                     scene->names[nn].appendf("%u", nn);
@@ -2355,11 +2370,11 @@ namespace put
                     scene->transforms[nn].rotation.euler_angles(0.0f, 0.0f, 0.0f);
                     scene->transforms[nn].scale = vec3f::one();
 
-                    scene->entities[nn] |= CMP_TRANSFORM;
+                    scene->entities[nn] |= e_cmp::transform;
 
                     add_selection(scene, nn);
 
-                    store_node_state(scene, ni, REDO);
+                    store_node_state(scene, ni, e_editor_actions::redo);
                 }
                 put::dev_ui::set_tooltip("Add New Node");
 
@@ -2389,10 +2404,10 @@ namespace put
                     u32       count;
                 };
 
-                static scene_num_dump dumps[] = {{CMP_ALLOCATED, "Allocated", 0},
-                                                 {CMP_GEOMETRY, "Geometries", 0},
-                                                 {CMP_BONE, "Bones", 0},
-                                                 {CMP_ANIM_CONTROLLER, "Anim Controllers", 0}};
+                static scene_num_dump dumps[] = {{e_cmp::allocated, "Allocated", 0},
+                                                 {e_cmp::geometry, "Geometries", 0},
+                                                 {e_cmp::bone, "Bones", 0},
+                                                 {e_cmp::anim_controller, "Anim Controllers", 0}};
 
                 s32 selected_index = -1;
                 u32 num_selected = sb_count(scene->selection_list);
@@ -2413,7 +2428,7 @@ namespace put
                     }
                     ImGui::Unindent();
 
-                    ImGui::Text("Total Entities: %i", scene->num_entities);
+                    ImGui::Text("Total Entities: %lu", scene->num_entities);
                     ImGui::Text("Selected: %i", (s32)sb_count(scene->selection_list));
 
                     for (s32 i = 0; i < PEN_ARRAY_SIZE(dumps); ++i)
@@ -2436,10 +2451,10 @@ namespace put
                     {
                         for (u32 i = 0; i < scene->num_entities; ++i)
                         {
-                            if (!(scene->entities[i] & CMP_ALLOCATED))
+                            if (!(scene->entities[i] & e_cmp::allocated))
                                 continue;
 
-                            bool selected = scene->state_flags[i] & SF_SELECTED;
+                            bool selected = scene->state_flags[i] & e_state::selected;
 
                             ImGui::Unindent(ImGui::GetTreeNodeToLabelSpacing());
 
@@ -2510,7 +2525,7 @@ namespace put
 
                 // Undoable actions
                 if (sb_count(scene->selection_list) == 1)
-                    store_node_state(scene, scene->selection_list[0], UNDO);
+                    store_node_state(scene, scene->selection_list[0], e_editor_actions::undo);
 
                 scene_options_ui(scene);
 
@@ -2540,7 +2555,7 @@ namespace put
                     scene->extensions[e].browser_func(scene->extensions[e], scene);
 
                 if (sb_count(scene->selection_list) == 1)
-                    store_node_state(scene, scene->selection_list[0], REDO);
+                    store_node_state(scene, scene->selection_list[0], e_editor_actions::redo);
 
                 ImGui::End();
             }
@@ -2572,7 +2587,7 @@ namespace put
                         continue;
                 }
 
-                store_node_state(scene, i, UNDO);
+                store_node_state(scene, i, e_editor_actions::undo);
 
                 cmp_transform& t = scene->transforms[i];
 
@@ -2591,9 +2606,9 @@ namespace put
                     t.rotation = t.rotation * q;
                 }
 
-                scene->entities[i] |= CMP_TRANSFORM;
+                scene->entities[i] |= e_cmp::transform;
 
-                store_node_state(scene, i, REDO);
+                store_node_state(scene, i, e_editor_actions::redo);
             }
         }
 
@@ -2607,9 +2622,9 @@ namespace put
         };
         static physics_pick s_physics_pick_info;
 
-        void physics_pick_callback(const physics::ray_cast_result& result)
+        void physics_pick_callback(const physics::cast_result& result)
         {
-            s_physics_pick_info.state = PICKING_COMPLETE;
+            s_physics_pick_info.state = e_picking_state::complete;
             s_physics_pick_info.pos = result.point;
             s_physics_pick_info.grabbed = false;
             s_physics_pick_info.physics_handle = result.physics_handle;
@@ -2620,10 +2635,12 @@ namespace put
             if (pen::input_key(PK_MENU) || pen::input_key(PK_COMMAND))
                 return;
 
-            s_select_flags &= ~(WIDGET_SELECTED);
+            s_select_flags &= ~(e_select_flags::widget_selected);
 
             ecs_scene* scene = view.scene;
-            vec2i      vpi = vec2i(view.viewport->width, view.viewport->height);
+
+            viewport vp = _renderer_resolve_viewport_ratio(*view.viewport);
+            vec2i    vpi = vec2i(vp.width, vp.height);
 
             static vec3f widget_points[4];
             static vec3f pre_click_axis_pos[3];
@@ -2631,7 +2648,7 @@ namespace put
             static f32   selection_radius = 5.0f;
 
             const pen::mouse_state& ms = pen::input_get_mouse_state();
-            vec3f                   mousev3 = vec3f(ms.x, view.viewport->height - ms.y, 0.0f);
+            vec3f                   mousev3 = vec3f(ms.x, vpi.y - ms.y, 0.0f);
 
             mat4  view_proj = view.camera->proj * view.camera->view;
             vec3f r0 = maths::unproject_sc(vec3f(mousev3.x, mousev3.y, 0.0f), view_proj, vpi);
@@ -2642,11 +2659,11 @@ namespace put
             {
                 if (!s_physics_pick_info.grabbed && s_physics_pick_info.constraint == -1)
                 {
-                    if (s_physics_pick_info.state == PICKING_READY)
+                    if (s_physics_pick_info.state == e_picking_state::ready)
                     {
                         if (ms.buttons[PEN_MOUSE_L])
                         {
-                            s_physics_pick_info.state = PICKING_SINGLE;
+                            s_physics_pick_info.state = e_picking_state::single;
 
                             physics::ray_cast_params rcp;
                             rcp.start = r0;
@@ -2659,7 +2676,7 @@ namespace put
                             physics::cast_ray(rcp);
                         }
                     }
-                    else if (s_physics_pick_info.state == PICKING_COMPLETE)
+                    else if (s_physics_pick_info.state == e_picking_state::complete)
                     {
                         if (s_physics_pick_info.physics_handle != -1)
                         {
@@ -2669,11 +2686,11 @@ namespace put
                             cp.rb_indices[0] = s_physics_pick_info.physics_handle;
 
                             s_physics_pick_info.constraint = physics::add_constraint(cp);
-                            s_physics_pick_info.state = PICKING_GRABBED;
+                            s_physics_pick_info.state = e_picking_state::grabbed;
                         }
                         else
                         {
-                            s_physics_pick_info.state = PICKING_READY;
+                            s_physics_pick_info.state = e_picking_state::ready;
                         }
                     }
                 }
@@ -2684,13 +2701,13 @@ namespace put
                         vec3f new_pos =
                             maths::ray_plane_intersect(r0, vr, s_physics_pick_info.pos, view.camera->view.get_row(2).xyz);
 
-                        physics::set_v3(s_physics_pick_info.constraint, new_pos, physics::CMD_SET_P2P_CONSTRAINT_POS);
+                        physics::set_v3(s_physics_pick_info.constraint, new_pos, physics::e_cmd::set_p2p_constraint_pos);
                     }
                     else
                     {
                         physics::release_entity(s_physics_pick_info.constraint);
                         s_physics_pick_info.constraint = -1;
-                        s_physics_pick_info.state = PICKING_READY;
+                        s_physics_pick_info.state = e_picking_state::ready;
                     }
                 }
             }
@@ -2785,7 +2802,7 @@ namespace put
 
                     if (selected[i])
                     {
-                        s_select_flags |= WIDGET_SELECTED;
+                        s_select_flags |= e_select_flags::widget_selected;
 
                         vec3f prev_line = normalised(attach_point - pos);
                         vec3f cur_line = normalised(_cp - pos);
@@ -2879,7 +2896,7 @@ namespace put
 
                     if (selected_axis & (1 << i))
                     {
-                        s_select_flags |= WIDGET_SELECTED;
+                        s_select_flags |= e_select_flags::widget_selected;
                         col = vec4f::one();
                     }
 
@@ -3033,17 +3050,17 @@ namespace put
 
             for (u32 n = 0; n < scene->num_entities; ++n)
             {
-                if (!(scene->entities[n] & CMP_LIGHT))
+                if (!(scene->entities[n] & e_cmp::light))
                     continue;
 
-                if (selected_only && !(scene->state_flags[n] & SF_SELECTED))
+                if (selected_only && !(scene->state_flags[n] & e_state::selected))
                     continue;
 
                 cmp_light& snl = scene->lights[n];
 
                 switch (snl.type)
                 {
-                    case LIGHT_TYPE_DIR:
+                    case e_light_type::dir:
                     {
                         // line only
                         dbg::add_line(vec3f::zero(), scene->lights[n].direction * k_dir_light_offset,
@@ -3052,14 +3069,14 @@ namespace put
                     }
                     break;
 
-                    case LIGHT_TYPE_AREA:
+                    case e_light_type::area:
                     {
                         dbg::add_obb(scene->world_matrices[n], vec4f(snl.colour, 1.0f));
                     }
                     break;
 
-                    case LIGHT_TYPE_SPOT:
-                    case LIGHT_TYPE_POINT:
+                    case e_light_type::spot:
+                    case e_light_type::point:
                     {
                         // quad point at pos
                         vec3f p = scene->world_matrices[n].get_translation();
@@ -3098,19 +3115,19 @@ namespace put
 
             for (u32 n = 0; n < scene->num_entities; ++n)
             {
-                if (!(scene->state_flags[n] & SF_SELECTED) && !(scene->view_flags & e_scene_view_flags::physics))
+                if (!(scene->state_flags[n] & e_state::selected) && !(scene->view_flags & e_scene_view_flags::physics))
                     continue;
 
-                bool preview_rb = s_physics_preview.active && s_physics_preview.params.type == PHYSICS_TYPE_RIGID_BODY;
+                bool preview_rb = s_physics_preview.active && s_physics_preview.params.type == e_physics_type::rigid_body;
 
-                if ((scene->entities[n] & CMP_PHYSICS) || preview_rb)
+                if ((scene->entities[n] & e_cmp::physics) || preview_rb)
                 {
                     u32 prim = scene->physics_data[n].rigid_body.shape;
 
                     if (prim == 0)
                         continue;
 
-                    geometry_resource* gr = get_geometry_resource(k_primitives[prim]);
+                    geometry_resource* gr = get_geometry_resource(ID_PRIMITIVE[prim]);
 
                     if (!gr)
                         continue;
@@ -3132,7 +3149,7 @@ namespace put
 
                     // update cbuffer
                     cmp_draw_call dc;
-                    if (preview_rb && !(scene->entities[n] & CMP_PHYSICS))
+                    if (preview_rb && !(scene->entities[n] & e_cmp::physics))
                     {
                         // from preview
                         mat4 scale = mat::create_scale(s_physics_preview.params.rigid_body.dimensions);
@@ -3159,12 +3176,12 @@ namespace put
                     pen::renderer_draw_indexed(gr->num_indices, 0, 0, PEN_PT_TRIANGLELIST);
                 }
 
-                bool preview_con = s_physics_preview.active && s_physics_preview.params.type == PHYSICS_TYPE_CONSTRAINT;
+                bool preview_con = s_physics_preview.active && s_physics_preview.params.type == e_physics_type::constraint;
 
                 if (preview_con)
                     render_constraint(scene, n, s_physics_preview.params.constraint);
 
-                if ((scene->entities[n] & CMP_CONSTRAINT))
+                if ((scene->entities[n] & e_cmp::constraint))
                     render_constraint(scene, n, scene->physics_data[n].constraint);
             }
         }
@@ -3172,7 +3189,7 @@ namespace put
         void render_scene_editor(const scene_view& view)
         {
             ecs_scene* scene = view.scene;
-            if(scene->view_flags & e_scene_view_flags::hide_debug)
+            if (scene->view_flags & e_scene_view_flags::hide_debug)
                 return;
 
             render_physics_debug(view);
@@ -3308,21 +3325,21 @@ namespace put
                 {
                     vec4f col = vec4f::white();
                     bool  selected = false;
-                    if (scene->state_flags[n] & SF_SELECTED)
+                    if (scene->state_flags[n] & e_state::selected)
                         selected = true;
 
                     u32 p = scene->parents[n];
                     if (p != n)
                     {
-                        if (scene->state_flags[p] & SF_SELECTED || scene->state_flags[p] & SF_CHILD_SELECTED)
+                        if (scene->state_flags[p] & e_state::selected || scene->state_flags[p] & e_state::child_selected)
                         {
-                            scene->state_flags[n] |= SF_CHILD_SELECTED;
+                            scene->state_flags[n] |= e_state::child_selected;
                             selected = true;
                             col = vec4f(0.75f, 0.75f, 0.75f, 1.0f);
                         }
                         else
                         {
-                            scene->state_flags[n] &= ~SF_CHILD_SELECTED;
+                            scene->state_flags[n] &= ~e_state::child_selected;
                         }
                     }
 
@@ -3336,10 +3353,10 @@ namespace put
             {
                 for (u32 n = 0; n < scene->num_entities; ++n)
                 {
-                    if (!(scene->entities[n] & CMP_BONE))
+                    if (!(scene->entities[n] & e_cmp::bone))
                         continue;
 
-                    if (scene->entities[n] & CMP_ANIM_TRAJECTORY)
+                    if (scene->entities[n] & e_cmp::anim_trajectory)
                     {
                         vec3f p = scene->world_matrices[n].get_translation();
 
@@ -3349,7 +3366,7 @@ namespace put
                     u32 p = scene->parents[n];
                     if (p != n)
                     {
-                        if (!(scene->entities[p] & CMP_BONE) || (scene->entities[p] & CMP_ANIM_TRAJECTORY))
+                        if (!(scene->entities[p] & e_cmp::bone) || (scene->entities[p] & e_cmp::anim_trajectory))
                             continue;
 
                         vec3f p1 = scene->world_matrices[n].get_translation();
@@ -3390,7 +3407,7 @@ namespace put
 
         Str strip_project_dir(const Str& filename)
         {
-            Str project_dir = dev_ui::get_program_preference_filename("project_dir", pen_user_info.working_directory);
+            Str project_dir = dev_ui::get_program_preference_filename("project_dir", os_get_user_info().working_directory);
             Str stripped = pen::str_replace_string(filename, project_dir.c_str(), "");
             return stripped;
         }
@@ -3398,7 +3415,6 @@ namespace put
 } // namespace put
 
 #if 0 // code to calc tangents
-
 for (long i = 0; i < vertices.size(); i += 3)
 {
     if (i + 2 < vertices.size())

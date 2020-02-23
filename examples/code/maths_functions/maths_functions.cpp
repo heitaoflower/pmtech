@@ -6,12 +6,20 @@ using namespace ecs;
 
 put::camera main_camera;
 
-pen::window_creation_params pen_window{
-    1280,             // width
-    720,              // height
-    4,                // MSAA samples
-    "maths_functions" // window title / process name
-};
+namespace pen
+{
+    pen_creation_params pen_entry(int argc, char** argv)
+    {
+        pen::pen_creation_params p;
+        p.window_width = 1280;
+        p.window_height = 720;
+        p.window_title = "maths_functions";
+        p.window_sample_count = 4;
+        p.user_thread_function = user_entry;
+        p.flags = pen::e_pen_create_flags::renderer;
+        return p;
+    }
+} // namespace pen
 
 // Small structs for debug maths rendering and test primitives
 struct debug_ray
@@ -103,7 +111,7 @@ void add_debug_point(const debug_extents& extents, ecs_scene* scene, debug_point
     u32 node = ecs::get_new_entity(scene);
     scene->names[node] = "point";
     scene->transforms[node].translation = random_vec_range(extents);
-    scene->entities[node] |= CMP_TRANSFORM;
+    scene->entities[node] |= e_cmp::transform;
     scene->parents[node] = node;
 
     point.node = node;
@@ -116,7 +124,7 @@ void add_debug_plane(const debug_extents& extents, ecs_scene* scene, debug_plane
     u32 node = ecs::get_new_entity(scene);
     scene->names[node] = "plane";
     scene->transforms[node].translation = random_vec_range(extents);
-    scene->entities[node] |= CMP_TRANSFORM;
+    scene->entities[node] |= e_cmp::transform;
     scene->parents[node] = node;
 
     plane.normal = normalised(random_vec_range({-vec3f::one(), vec3f::one()}));
@@ -129,7 +137,7 @@ void add_debug_ray(const debug_extents& extents, ecs_scene* scene, debug_ray& ra
     u32 node = ecs::get_new_entity(scene);
     scene->names[node] = "ray";
     scene->transforms[node].translation = random_vec_range(extents);
-    scene->entities[node] |= CMP_TRANSFORM;
+    scene->entities[node] |= e_cmp::transform;
     scene->parents[node] = node;
 
     ray.direction = normalised(random_vec_range({-vec3f::one(), vec3f::one()}));
@@ -142,7 +150,7 @@ void add_debug_line(const debug_extents& extents, ecs_scene* scene, debug_line& 
     u32 node = ecs::get_new_entity(scene);
     scene->names[node] = "line";
     scene->transforms[node].translation = random_vec_range(extents);
-    scene->entities[node] |= CMP_TRANSFORM;
+    scene->entities[node] |= e_cmp::transform;
     scene->parents[node] = node;
 
     line.l1 = random_vec_range(extents);
@@ -155,7 +163,7 @@ void add_debug_aabb(const debug_extents& extents, ecs_scene* scene, debug_aabb& 
     u32 node = ecs::get_new_entity(scene);
     scene->names[node] = "aabb";
     scene->transforms[node].translation = random_vec_range(extents);
-    scene->entities[node] |= CMP_TRANSFORM;
+    scene->entities[node] |= e_cmp::transform;
     scene->parents[node] = node;
 
     vec3f size = fabs(random_vec_range(extents));
@@ -178,7 +186,7 @@ void add_debug_sphere(const debug_extents& extents, ecs_scene* scene, debug_sphe
     scene->transforms[node].scale = vec3f(size.x);
     scene->transforms[node].translation = random_vec_range(extents);
 
-    scene->entities[node] |= CMP_TRANSFORM;
+    scene->entities[node] |= e_cmp::transform;
     scene->parents[node] = node;
 
     instantiate_geometry(sphere_res, scene, node);
@@ -203,7 +211,7 @@ void add_debug_solid_aabb(const debug_extents& extents, ecs_scene* scene, debug_
     scene->transforms[node].scale = size;
     scene->transforms[node].translation = random_vec_range(extents);
 
-    scene->entities[node] |= CMP_TRANSFORM;
+    scene->entities[node] |= e_cmp::transform;
     scene->parents[node] = node;
 
     instantiate_geometry(cube_res, scene, node);
@@ -226,7 +234,7 @@ void add_debug_obb(const debug_extents& extents, ecs_scene* scene, debug_obb& ob
     scene->transforms[node].rotation.euler_angles(rr.x, rr.y, rr.z);
 
     scene->transforms[node].scale = fabs(random_vec_range(extents));
-    scene->entities[node] |= CMP_TRANSFORM;
+    scene->entities[node] |= e_cmp::transform;
     scene->parents[node] = node;
 
     obb.node = node;
@@ -245,7 +253,7 @@ void add_debug_solid_obb(const debug_extents& extents, ecs_scene* scene, debug_o
     scene->transforms[node].rotation.euler_angles(rr.x, rr.y, rr.z);
 
     scene->transforms[node].scale = fabs(random_vec_range(extents));
-    scene->entities[node] |= CMP_TRANSFORM;
+    scene->entities[node] |= e_cmp::transform;
     scene->parents[node] = node;
 
     instantiate_geometry(cube_res, scene, node);
@@ -268,7 +276,7 @@ void add_debug_solid_cone(const debug_extents& extents, ecs_scene* scene, debug_
     scene->transforms[node].rotation.euler_angles(rr.x, rr.y, rr.z);
 
     scene->transforms[node].scale = vec3f(fabs(rr.x), fabs(rr.y), fabs(rr.x));
-    scene->entities[node] |= CMP_TRANSFORM;
+    scene->entities[node] |= e_cmp::transform;
     scene->parents[node] = node;
 
     instantiate_geometry(cone_res, scene, node);
@@ -283,7 +291,7 @@ void add_debug_triangle(const debug_extents& extents, ecs_scene* scene, debug_tr
     u32 node = ecs::get_new_entity(scene);
     scene->names[node] = "triangle";
     scene->transforms[node].translation = random_vec_range(extents);
-    scene->entities[node] |= CMP_TRANSFORM;
+    scene->entities[node] |= e_cmp::transform;
     scene->parents[node] = node;
 
     tri.t0 = random_vec_range(extents);
@@ -306,8 +314,8 @@ void test_ray_plane_intersect(ecs_scene* scene, bool initialise)
 
         add_debug_ray(e, scene, ray);
         add_debug_plane(e, scene, plane);
-        
-        ecs::update_scene(scene, 1.0f/60.0f);
+
+        ecs::update_scene(scene, 1.0f / 60.0f);
     }
 
     vec3f ip = maths::ray_plane_intersect(ray.origin, ray.direction, plane.point, plane.normal);
@@ -335,8 +343,8 @@ void test_ray_vs_aabb(ecs_scene* scene, bool initialise)
 
         add_debug_ray(e, scene, ray);
         add_debug_solid_aabb(e, scene, aabb);
-        
-        ecs::update_scene(scene, 1.0f/60.0f);
+
+        ecs::update_scene(scene, 1.0f / 60.0f);
     }
 
     vec3f ip = vec3f::zero();
@@ -364,7 +372,7 @@ void test_ray_vs_obb(ecs_scene* scene, bool initialise)
     static debug_extents e = {vec3f(-10.0, -10.0, -10.0), vec3f(10.0, 10.0, 10.0)};
 
     bool randomise = ImGui::Button("Randomise");
-    
+
     static bool show_unit_aabb_space = false;
     ImGui::Checkbox("Show Unit AABB Space", &show_unit_aabb_space);
 
@@ -374,28 +382,28 @@ void test_ray_vs_obb(ecs_scene* scene, bool initialise)
 
         add_debug_ray(e, scene, ray);
         add_debug_solid_obb(e, scene, obb);
-        
-        ecs::update_scene(scene, 1.0f/60.0f);
+
+        ecs::update_scene(scene, 1.0f / 60.0f);
     }
 
     vec3f ip = vec3f::zero();
     bool  intersect = maths::ray_vs_obb(scene->world_matrices[obb.node], ray.origin, ray.direction, ip);
-    
-    if(show_unit_aabb_space)
+
+    if (show_unit_aabb_space)
     {
         mat4  invm = mat::inverse4x4(scene->world_matrices[obb.node]);
-        vec3f tr1  = invm.transform_vector(vec4f(ray.origin, 1.0f)).xyz;
-        
+        vec3f tr1 = invm.transform_vector(vec4f(ray.origin, 1.0f)).xyz;
+
         invm.set_translation(vec3f::zero());
         vec3f trv = invm.transform_vector(vec4f(ray.direction, 1.0f)).xyz;
-        
+
         bool ii = maths::ray_vs_aabb(-vec3f::one(), vec3f::one(), tr1, normalised(trv), ip);
-        
+
         put::dbg::add_aabb(-vec3f::one(), vec3f::one(), vec4f::cyan());
-        
+
         put::dbg::add_line(tr1, tr1 + trv * 1000.0f, vec4f::magenta());
-        
-        if(ii)
+
+        if (ii)
         {
             put::dbg::add_point(ip, 0.1f, vec4f::green());
         }
@@ -449,8 +457,8 @@ void test_point_plane_distance(ecs_scene* scene, bool initialise)
 
         add_debug_point(e, scene, point);
         add_debug_plane(e, scene, plane);
-        
-        ecs::update_scene(scene, 1.0f/60.0f);
+
+        ecs::update_scene(scene, 1.0f / 60.0f);
     }
 
     f32 distance = maths::point_plane_distance(point.point, plane.point, plane.normal);
@@ -486,8 +494,8 @@ void test_aabb_vs_plane(ecs_scene* scene, bool initialise)
 
         add_debug_plane(e, scene, plane);
         add_debug_aabb(e, scene, aabb);
-        
-        ecs::update_scene(scene, 1.0f/60.0f);
+
+        ecs::update_scene(scene, 1.0f / 60.0f);
     }
 
     u32 c = maths::aabb_vs_plane(aabb.min, aabb.max, plane.point, plane.normal);
@@ -515,8 +523,8 @@ void test_sphere_vs_plane(ecs_scene* scene, bool initialise)
 
         add_debug_plane(e, scene, plane);
         add_debug_sphere(e, scene, sphere);
-        
-        ecs::update_scene(scene, 1.0f/60.0f);
+
+        ecs::update_scene(scene, 1.0f / 60.0f);
     }
 
     u32 c = maths::sphere_vs_plane(sphere.pos, sphere.radius, plane.point, plane.normal);
@@ -542,11 +550,12 @@ void test_project(ecs_scene* scene, bool initialise)
         ecs::clear_scene(scene);
 
         add_debug_point(e, scene, point);
-        
-        ecs::update_scene(scene, 1.0f/60.0f);
+
+        ecs::update_scene(scene, 1.0f / 60.0f);
     }
 
-    vec2i vp = vec2i(pen_window.width, pen_window.height);
+    vec2i vp;
+    pen::window_get_size(vp.x, vp.y);
 
     mat4  view_proj = main_camera.proj * main_camera.view;
     vec3f screen_point = maths::project_to_sc(point.point, view_proj, vp);
@@ -573,8 +582,8 @@ void test_point_aabb(ecs_scene* scene, bool initialise)
 
         add_debug_aabb(e, scene, aabb);
         add_debug_point(e, scene, point);
-        
-        ecs::update_scene(scene, 1.0f/60.0f);
+
+        ecs::update_scene(scene, 1.0f / 60.0f);
     }
 
     bool inside = maths::point_inside_aabb(aabb.min, aabb.max, point.point);
@@ -605,8 +614,8 @@ void test_point_obb(ecs_scene* scene, bool initialise)
 
         add_debug_obb(e, scene, obb);
         add_debug_point(e, scene, point);
-        
-        ecs::update_scene(scene, 1.0f/60.0f);
+
+        ecs::update_scene(scene, 1.0f / 60.0f);
     }
 
     bool inside = maths::point_inside_obb(scene->world_matrices[obb.node], point.point);
@@ -638,8 +647,8 @@ void test_point_line(ecs_scene* scene, bool initialise)
 
         add_debug_line(e, scene, line);
         add_debug_point(e, scene, point);
-        
-        ecs::update_scene(scene, 1.0f/60.0f);
+
+        ecs::update_scene(scene, 1.0f / 60.0f);
     }
 
     vec3f cp = maths::closest_point_on_line(line.l1, line.l2, point.point);
@@ -671,8 +680,8 @@ void test_point_ray(ecs_scene* scene, bool initialise)
 
         add_debug_point(e, scene, point);
         add_debug_ray(e, scene, ray);
-        
-        ecs::update_scene(scene, 1.0f/60.0f);
+
+        ecs::update_scene(scene, 1.0f / 60.0f);
     }
 
     vec3f cp = maths::closest_point_on_ray(ray.origin, ray.direction, point.point);
@@ -701,8 +710,8 @@ void test_point_triangle(ecs_scene* scene, bool initialise)
 
         add_debug_triangle(e, scene, tri);
         add_debug_point(e, scene, point);
-        
-        ecs::update_scene(scene, 1.0f/60.0f);
+
+        ecs::update_scene(scene, 1.0f / 60.0f);
     }
 
     bool inside = maths::point_inside_triangle(point.point, tri.t0, tri.t1, tri.t2);
@@ -746,8 +755,8 @@ void test_sphere_vs_sphere(ecs_scene* scene, bool initialise)
 
         add_debug_sphere(e, scene, sphere0);
         add_debug_sphere(e, scene, sphere1);
-        
-        ecs::update_scene(scene, 1.0f/60.0f);
+
+        ecs::update_scene(scene, 1.0f / 60.0f);
     }
 
     bool i = maths::sphere_vs_sphere(sphere0.pos, sphere0.radius, sphere1.pos, sphere1.radius);
@@ -776,8 +785,8 @@ void test_sphere_vs_aabb(ecs_scene* scene, bool initialise)
 
         add_debug_solid_aabb(e, scene, aabb);
         add_debug_sphere(e, scene, sphere);
-        
-        ecs::update_scene(scene, 1.0f/60.0f);
+
+        ecs::update_scene(scene, 1.0f / 60.0f);
     }
 
     bool i = maths::sphere_vs_aabb(sphere.pos, sphere.radius, aabb.min, aabb.max);
@@ -806,8 +815,8 @@ void test_aabb_vs_aabb(ecs_scene* scene, bool initialise)
 
         add_debug_solid_aabb(e, scene, aabb0);
         add_debug_solid_aabb(e, scene, aabb1);
-        
-        ecs::update_scene(scene, 1.0f/60.0f);
+
+        ecs::update_scene(scene, 1.0f / 60.0f);
     }
 
     bool i = maths::aabb_vs_aabb(aabb0.min, aabb0.max, aabb1.min, aabb1.max);
@@ -836,8 +845,8 @@ void test_point_sphere(ecs_scene* scene, bool initialise)
 
         add_debug_point(e, scene, point);
         add_debug_sphere(e, scene, sphere);
-        
-        ecs::update_scene(scene, 1.0f/60.0f);
+
+        ecs::update_scene(scene, 1.0f / 60.0f);
     }
 
     bool  i = maths::point_inside_sphere(sphere.pos, sphere.radius, point.point);
@@ -872,8 +881,8 @@ void test_point_cone(ecs_scene* scene, bool initialise)
 
         add_debug_point(e, scene, point);
         add_debug_solid_cone(e, scene, cone);
-        
-        ecs::update_scene(scene, 1.0f/60.0f);
+
+        ecs::update_scene(scene, 1.0f / 60.0f);
     }
 
     f32 r = scene->transforms[cone.node].scale.x;
@@ -909,8 +918,8 @@ void test_line_vs_line(ecs_scene* scene, bool initialise)
 
         add_debug_line(e, scene, line0);
         add_debug_line(e, scene, line1);
-        
-        ecs::update_scene(scene, 1.0f/60.0f);
+
+        ecs::update_scene(scene, 1.0f / 60.0f);
     }
 
     vec3f ip = vec3f::zero();
@@ -979,7 +988,7 @@ void maths_test_ui(ecs_scene* scene)
 {
     static s32 test_index = 0;
     static s32 test_variant_index = 0;
-    
+
     static bool animate = false;
     static bool initialise = true;
     static bool gen_tests = false;
@@ -991,7 +1000,7 @@ void maths_test_ui(ecs_scene* scene)
 
     if (animate)
     {
-        static f32 swap_timer = 0.0f;
+        static f32         swap_timer = 0.0f;
         static pen::timer* at = pen::timer_create();
         swap_timer += pen::timer_elapsed_ms(at);
         pen::timer_start(at);
@@ -1006,29 +1015,29 @@ void maths_test_ui(ecs_scene* scene)
         if (test_index >= PEN_ARRAY_SIZE(test_names))
             test_index = 0;
     }
-    
-    if(gen_tests)
+
+    if (gen_tests)
     {
         scene->view_flags |= e_scene_view_flags::hide;
         initialise = true;
-        
-        if(test_variant_index >= 10)
+
+        if (test_variant_index >= 10)
         {
             std::cout << "}\n";
             test_index++;
             test_variant_index = 0;
         }
-        
-        if(test_variant_index == 0)
+
+        if (test_variant_index == 0)
             std::cout << "TEST_CASE( \"" << test_names[test_index] << "\", \"[maths]\") \n{\n";
-        
+
         test_variant_index++;
         _test_stack_depth = 0;
     }
 
     test_functions[test_index](scene, initialise);
-    
-    if(gen_tests)
+
+    if (gen_tests)
         _test_stack_depth = -1;
 
     initialise = false;
@@ -1038,7 +1047,7 @@ void example_setup(ecs::ecs_scene* scene, camera& cam)
 {
     dev_ui::enable(true);
     scene->view_flags &= ~e_scene_view_flags::hide_debug;
-    
+
     // create constant col material
     constant_colour_material->material_name = "constant_colour";
     constant_colour_material->shader_name = "pmfx_utility";

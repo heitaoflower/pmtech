@@ -10,12 +10,20 @@
 using namespace put;
 using namespace put::ecs;
 
-pen::window_creation_params pen_window{
-    1280, // width
-    720,  // height
-    4,    // MSAA samples
-    "ik"  // window title / process name
-};
+namespace pen
+{
+    pen_creation_params pen_entry(int argc, char** argv)
+    {
+        pen::pen_creation_params p;
+        p.window_width = 1280;
+        p.window_height = 720;
+        p.window_title = "ik";
+        p.window_sample_count = 4;
+        p.user_thread_function = user_entry;
+        p.flags = pen::e_pen_create_flags::renderer;
+        return p;
+    }
+} // namespace pen
 
 namespace
 {
@@ -56,6 +64,9 @@ void reset(Tree& tree, Jacobian* jac)
 
 void example_setup(ecs::ecs_scene* scene, camera& cam)
 {
+    scene->view_flags &= ~e_scene_view_flags::hide_debug;
+    put::dev_ui::enable(true);
+
     //const VectorR3& unitx = VectorR3::UnitX;
     const VectorR3& unity = VectorR3::UnitY;
     const VectorR3& unitz = VectorR3::UnitZ;
@@ -101,7 +112,7 @@ void example_setup(ecs::ecs_scene* scene, camera& cam)
     scene->transforms[effector].translation = vec3f(0.0f, 0.0f, 2.0f);
     scene->transforms[effector].scale = vec3f::one();
     scene->transforms[effector].rotation = quat();
-    scene->entities[effector] |= CMP_TRANSFORM;
+    scene->entities[effector] |= e_cmp::transform;
 
     for (u32 i = 0; i < 8; ++i)
     {
@@ -125,7 +136,7 @@ void example_update(ecs::ecs_scene* scene, camera& cam, f32 dt)
     {
         u32 ii = root + i;
         get_local_transform(ik_nodes[i], scene->transforms[ii]);
-        scene->entities[ii] |= CMP_TRANSFORM;
+        scene->entities[ii] |= e_cmp::transform;
     }
 
     //ik_jacobian->SetJtargetActive();

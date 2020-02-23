@@ -11,18 +11,24 @@
 #include "timer.h"
 #include <vector>
 
-pen::window_creation_params pen_window{
-    1280,          // width
-    720,           // height
-    4,             // MSAA samples
-    "audio_player" // window title / process name
-};
+void* pen::user_entry(void* params);
+namespace pen
+{
+    pen_creation_params pen_entry(int argc, char** argv)
+    {
+        pen::pen_creation_params p;
+        p.window_width = 1280;
+        p.window_height = 720;
+        p.window_title = "audio_player";
+        p.window_sample_count = 4;
+        p.user_thread_function = user_entry;
+        p.flags = pen::e_pen_create_flags::renderer;
+        return p;
+    }
+} // namespace pen
 
 u32 clear_state_grey;
 u32 raster_state_cull_back;
-
-pen::viewport vp = {0.0f, 0.0f, 1280.0f, 720.0f, 0.0f, 1.0f};
-
 u32 default_depth_stencil_state;
 
 using namespace put;
@@ -60,14 +66,14 @@ void renderer_state_init()
 
 void audio_player_update();
 
-PEN_TRV pen::user_entry(void* params)
+void* pen::user_entry(void* params)
 {
     // unpack the params passed to the thread and signal to the engine it ok to proceed
     pen::job_thread_params* job_params = (pen::job_thread_params*)params;
     pen::job*               p_thread_info = job_params->job_info;
     pen::semaphore_post(p_thread_info->p_sem_continue, 1);
 
-    pen::jobs_create_job(put::audio_thread_function, 1024 * 10, nullptr, pen::THREAD_START_DETACHED);
+    pen::jobs_create_job(put::audio_thread_function, 1024 * 10, nullptr, pen::e_thread_start_flags::detached);
 
     renderer_state_init();
 
@@ -82,6 +88,7 @@ PEN_TRV pen::user_entry(void* params)
         // bind back buffer and clear
         pen::renderer_set_depth_stencil_state(default_depth_stencil_state);
 
+        viewport vp = {0.0f, 0.0f, PEN_BACK_BUFFER_RATIO, 1.0f, 0.0f, 1.0f};
         pen::renderer_set_viewport(vp);
         pen::renderer_set_scissor_rect(rect{vp.x, vp.y, vp.width, vp.height});
         pen::renderer_set_targets(PEN_BACK_BUFFER_COLOUR, PEN_BACK_BUFFER_DEPTH);
@@ -436,12 +443,12 @@ class spectrum_analyser
             ++frame_counter;
         }
     }
-    
+
     void show_panel()
     {
         u32 display_analysis_loc = new_anlysis_loc;
-        ImGui::PlotLines("Per Sample Differentiation", &raw_diff[display_analysis_loc][0], current_display_samples, 0,
-                     NULL, -1.0f, 1.0f, ImVec2(530, 100));
+        ImGui::PlotLines("Per Sample Differentiation", &raw_diff[display_analysis_loc][0], current_display_samples, 0, NULL,
+                         -1.0f, 1.0f, ImVec2(530, 100));
     }
 
     void show_window()
@@ -656,7 +663,7 @@ class playback_deck
         timestamp = pen::get_time_ms();
 
         fame_time = timestamp - prev_time;
-        
+
         sa.show_panel();
 
         // file info

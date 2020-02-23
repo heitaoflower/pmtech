@@ -20,16 +20,25 @@
 using namespace put;
 using namespace ecs;
 
-pen::window_creation_params pen_window{
-    1280,         // width
-    720,          // height
-    4,            // MSAA samples
-    "blend_modes" // window title / process name
-};
+void* pen::user_entry(void* params);
+namespace pen
+{
+    pen_creation_params pen_entry(int argc, char** argv)
+    {
+        pen::pen_creation_params p;
+        p.window_width = 1280;
+        p.window_height = 720;
+        p.window_title = "blend_modes";
+        p.window_sample_count = 4;
+        p.user_thread_function = user_entry;
+        p.flags = pen::e_pen_create_flags::renderer;
+        return p;
+    }
+} // namespace pen
 
 namespace physics
 {
-    extern PEN_TRV physics_thread_main(void* params);
+    extern void* physics_thread_main(void* params);
 }
 
 void blend_mode_ui()
@@ -100,14 +109,14 @@ void blend_layers(const scene_view& scene_view)
     pen::renderer_draw_indexed(quad->num_indices, 0, 0, PEN_PT_TRIANGLELIST);
 }
 
-PEN_TRV pen::user_entry(void* params)
+void* pen::user_entry(void* params)
 {
     // unpack the params passed to the thread and signal to the engine it ok to proceed
     pen::job_thread_params* job_params = (pen::job_thread_params*)params;
     pen::job*               p_thread_info = job_params->job_info;
     pen::semaphore_post(p_thread_info->p_sem_continue, 1);
 
-    pen::jobs_create_job(physics::physics_thread_main, 1024 * 10, nullptr, pen::THREAD_START_DETACHED);
+    pen::jobs_create_job(physics::physics_thread_main, 1024 * 10, nullptr, pen::e_thread_start_flags::detached);
 
     put::dev_ui::init();
     put::dbg::init();

@@ -3,12 +3,21 @@
 using namespace put;
 using namespace ecs;
 
-pen::window_creation_params pen_window{
-    1280,                  // width
-    720,                   // height
-    4,                     // MSAA samples
-    "complex_rigid_bodies" // window title / process name
-};
+void* pen::user_entry(void* params);
+namespace pen
+{
+    pen_creation_params pen_entry(int argc, char** argv)
+    {
+        pen::pen_creation_params p;
+        p.window_width = 1280;
+        p.window_height = 720;
+        p.window_title = "complex_rigid_bodies";
+        p.window_sample_count = 4;
+        p.user_thread_function = user_entry;
+        p.flags = pen::e_pen_create_flags::renderer;
+        return p;
+    }
+} // namespace pen
 
 u32 convex;
 u32 concave;
@@ -136,7 +145,7 @@ void example_setup(ecs_scene* scene, camera& cam)
     scene->view_flags &= ~e_scene_view_flags::hide_debug;
     scene->view_flags |= e_scene_view_flags::physics;
     editor_set_transform_mode(e_transform_mode::physics);
-    
+
     clear_scene(scene);
 
     material_resource* default_material = get_material_resource(PEN_HASH("default_material"));
@@ -149,12 +158,12 @@ void example_setup(ecs_scene* scene, camera& cam)
     scene->id_name[light] = PEN_HASH("front_light");
     scene->lights[light].colour = vec3f::one();
     scene->lights[light].direction = vec3f::one();
-    scene->lights[light].type = LIGHT_TYPE_DIR;
+    scene->lights[light].type = e_light_type::dir;
     scene->transforms[light].translation = vec3f::zero();
     scene->transforms[light].rotation = quat();
     scene->transforms[light].scale = vec3f::one();
-    scene->entities[light] |= CMP_LIGHT;
-    scene->entities[light] |= CMP_TRANSFORM;
+    scene->entities[light] |= e_cmp::light;
+    scene->entities[light] |= e_cmp::transform;
 
     // boxes
     vec3f bp = vec3f(-20.0f, 20.0f, 0.0f);
@@ -165,7 +174,7 @@ void example_setup(ecs_scene* scene, camera& cam)
         scene->transforms[bb].translation = bp;
         scene->transforms[bb].rotation = quat();
         scene->transforms[bb].scale = vec3f(0.5f, 0.5f, 0.5f);
-        scene->entities[bb] |= CMP_TRANSFORM;
+        scene->entities[bb] |= e_cmp::transform;
         scene->parents[bb] = bb;
         scene->physics_data[bb].rigid_body.shape = physics::e_shape::box;
         scene->physics_data[bb].rigid_body.mass = 1.0f;
@@ -183,7 +192,7 @@ void example_setup(ecs_scene* scene, camera& cam)
     scene->transforms[convex].translation = vec3f(0.0f, 8.0f, 0.0f);
     scene->transforms[convex].rotation = quat();
     scene->transforms[convex].scale = vec3f(1.0f, 1.0f, 1.0f);
-    scene->entities[convex] |= CMP_TRANSFORM;
+    scene->entities[convex] |= e_cmp::transform;
     scene->parents[convex] = convex;
     scene->physics_data[convex].rigid_body.shape = physics::e_shape::hull;
     scene->physics_data[convex].rigid_body.mass = 1.0f;
@@ -198,7 +207,7 @@ void example_setup(ecs_scene* scene, camera& cam)
     scene->transforms[concave].translation = vec3f(0.0f, 0.0f, 0.0f);
     scene->transforms[concave].rotation = quat();
     scene->transforms[concave].scale = vec3f(1.0f, 1.0f, 1.0f);
-    scene->entities[concave] |= CMP_TRANSFORM;
+    scene->entities[concave] |= e_cmp::transform;
     scene->parents[concave] = concave;
     scene->physics_data[concave].rigid_body.shape = physics::e_shape::mesh;
     scene->physics_data[concave].rigid_body.mass = 0.0f;
@@ -213,7 +222,7 @@ void example_setup(ecs_scene* scene, camera& cam)
     scene->transforms[compound].translation = vec3f(1.0f, 8.0f, 4.0f);
     scene->transforms[compound].rotation = quat();
     scene->transforms[compound].scale = vec3f(1.0f, 1.0f, 1.0f);
-    scene->entities[compound] |= CMP_TRANSFORM;
+    scene->entities[compound] |= e_cmp::transform;
     scene->parents[compound] = compound;
     scene->physics_data[compound].rigid_body.shape = physics::e_shape::compound;
     scene->physics_data[compound].rigid_body.mass = 1.0f;
@@ -225,7 +234,7 @@ void example_setup(ecs_scene* scene, camera& cam)
     scene->transforms[cc].translation = vec3f(1.0f, 8.0f, 4.0f);
     scene->transforms[cc].rotation = quat();
     scene->transforms[cc].scale = vec3f(0.5f, 2.0f, 0.5f);
-    scene->entities[cc] |= CMP_TRANSFORM;
+    scene->entities[cc] |= e_cmp::transform;
     scene->parents[cc] = cc;
     scene->physics_data[cc].rigid_body.shape = physics::e_shape::box;
     scene->physics_data[cc].rigid_body.mass = 1.0f;
@@ -241,7 +250,7 @@ void example_setup(ecs_scene* scene, camera& cam)
     scene->transforms[cc].translation = vec3f(3.0f, 8.0f, 4.0f);
     scene->transforms[cc].rotation = quat();
     scene->transforms[cc].scale = vec3f(2.0f, 0.5f, 0.5f);
-    scene->entities[cc] |= CMP_TRANSFORM;
+    scene->entities[cc] |= e_cmp::transform;
     scene->parents[cc] = cc;
     scene->physics_data[cc].rigid_body.shape = physics::e_shape::box;
     scene->physics_data[cc].rigid_body.mass = 1.0f;

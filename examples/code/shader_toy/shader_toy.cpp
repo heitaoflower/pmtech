@@ -2,6 +2,7 @@
 #include "file_system.h"
 #include "loader.h"
 #include "memory.h"
+#include "os.h"
 #include "pen.h"
 #include "pen_string.h"
 #include "pmfx.h"
@@ -11,12 +12,20 @@
 
 using namespace put;
 
-pen::window_creation_params pen_window{
-    1280,        // width
-    720,         // height
-    4,           // MSAA samples
-    "shader_toy" // window title / process name
-};
+namespace pen
+{
+    pen_creation_params pen_entry(int argc, char** argv)
+    {
+        pen::pen_creation_params p;
+        p.window_width = 1280;
+        p.window_height = 720;
+        p.window_title = "shader_toy";
+        p.window_sample_count = 4;
+        p.user_thread_function = user_entry;
+        p.flags = pen::e_pen_create_flags::renderer;
+        return p;
+    }
+} // namespace pen
 
 struct vertex
 {
@@ -107,11 +116,6 @@ void init_renderer()
 
     s_render_handles.raster_state = pen::renderer_create_rasterizer_state(rcp);
 
-    // viewport
-    s_render_handles.vp = {0.0f, 0.0f, 1280.0f, 720.0f, 0.0f, 1.0f};
-
-    s_render_handles.r = {0.0f, 1280.0f, 0.0f, 720.0f};
-
     // buffers
     // create vertex buffer for a quad
     textured_vertex quad_vertices[] = {
@@ -178,9 +182,10 @@ void init_renderer()
     pen::depth_stencil_creation_params depth_stencil_params = {0};
 
     // Depth test parameters
-    depth_stencil_params.depth_enable = true;
+    depth_stencil_params.depth_enable = false;
     depth_stencil_params.depth_write_mask = 1;
     depth_stencil_params.depth_func = PEN_COMPARISON_ALWAYS;
+    depth_stencil_params.stencil_enable = false;
 
     s_render_handles.ds_state = pen::renderer_create_depth_stencil_state(depth_stencil_params);
 
@@ -259,7 +264,7 @@ void show_ui()
     ImGui::End();
 }
 
-PEN_TRV pen::user_entry(void* params)
+void* pen::user_entry(void* params)
 {
     // unpack the params passed to the thread and signal to the engine it ok to proceed
     pen::job_thread_params* job_params = (pen::job_thread_params*)params;
@@ -270,7 +275,7 @@ PEN_TRV pen::user_entry(void* params)
 
     put::dev_ui::init();
     put::init_hot_loader();
-    
+
     // load shaders now requiring dependency on put to make loading simpler.
     u32 shader_toy_pmfx = pmfx::load_shader("shader_toy");
 
@@ -284,14 +289,19 @@ PEN_TRV pen::user_entry(void* params)
 
         s_render_handles.vp.x = 0;
         s_render_handles.vp.y = 0;
-        s_render_handles.vp.width = pen_window.width;
-        s_render_handles.vp.height = pen_window.height;
+        s_render_handles.vp.width = PEN_BACK_BUFFER_RATIO;
+        s_render_handles.vp.height = 1.0f;
+        s_render_handles.vp.min_depth = 0.0f;
+        s_render_handles.vp.max_depth = 1.0f;
 
         // update cbuffers
         // view
+        s32 w, h;
+        pen::window_get_size(w, h);
+
         float L = 0.0f;
-        float R = s_render_handles.vp.width;
-        float B = s_render_handles.vp.height;
+        float R = w;
+        float B = h;
         float T = 0.0f;
 
         float mvp[4][4] = {
@@ -304,8 +314,8 @@ PEN_TRV pen::user_entry(void* params)
         pen::renderer_update_buffer(s_render_handles.view_cbuffer, &mvp, sizeof(mvp), 0);
 
         // tweakbles
-        k_tweakables.size_x = 1280.0f;
-        k_tweakables.size_y = 720.0f;
+        k_tweakables.size_x = w;
+        k_tweakables.size_y = h;
         k_tweakables.time = pen::get_time_ms();
 
         pen::renderer_update_buffer(s_render_handles.tweakable_cbuffer, &k_tweakables, sizeof(tweakable_cb), 0);
@@ -315,7 +325,7 @@ PEN_TRV pen::user_entry(void* params)
         pen::renderer_set_scissor_rect(
             rect{s_render_handles.vp.x, s_render_handles.vp.y, s_render_handles.vp.width, s_render_handles.vp.height});
         pen::renderer_set_depth_stencil_state(s_render_handles.ds_state);
-        pen::renderer_set_targets(PEN_BACK_BUFFER_COLOUR, -1);
+        pen::renderer_set_targets(PEN_BACK_BUFFER_COLOUR, PEN_BACK_BUFFER_DEPTH);
         pen::renderer_clear(s_render_handles.clear_state);
 
         // draw quad

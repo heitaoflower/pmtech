@@ -3,7 +3,10 @@
 // License: https://github.com/polymonster/pmtech/blob/master/license.md
 
 #include "threads.h"
+#include "console.h"
 #include "memory.h"
+
+#include <Windows.h>
 
 namespace pen
 {
@@ -23,11 +26,12 @@ namespace pen
         HANDLE handle;
     } semaphore;
 
-    pen::thread* thread_create(PEN_THREAD_ROUTINE(thread_func), u32 stack_size, void* thread_params, thread_start_flags flags)
+    pen::thread* thread_create(dispatch_thread thread_func, u32 stack_size, void* thread_params, thread_start_flags flags)
     {
         pen::thread* new_thread = (pen::thread*)pen::memory_alloc(sizeof(pen::thread));
 
-        new_thread->handle = CreateThread(NULL, stack_size, thread_func, thread_params, flags, &new_thread->id);
+        new_thread->handle =
+            CreateThread(NULL, stack_size, (LPTHREAD_START_ROUTINE)thread_func, thread_params, flags, &new_thread->id);
 
         return new_thread;
     }
@@ -68,7 +72,6 @@ namespace pen
     u32 mutex_try_lock(mutex* p_mutex)
     {
         return TryEnterCriticalSection(&p_mutex->cs);
-        ;
     }
 
     void mutex_unlock(mutex* p_mutex)
@@ -128,5 +131,7 @@ namespace pen
 
     void thread_sleep_us(u32 microseconds)
     {
+        // windows cannot sleep micros
+        PEN_ASSERT(0);
     }
 } // namespace pen

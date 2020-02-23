@@ -3,14 +3,23 @@
 #include "pen.h"
 #include "threads.h"
 
-pen::window_creation_params pen_window{
-    1280,           // width
-    720,            // height
-    4,              // MSAA samples
-    "empty_project" // window title / process name
-};
+void* pen::user_entry(void* params);
+namespace pen
+{
+    pen_creation_params pen_entry(int argc, char** argv)
+    {
+        pen::pen_creation_params p;
+        p.window_width = 1280;
+        p.window_height = 720;
+        p.window_title = "empty_project";
+        p.window_sample_count = 4;
+        p.user_thread_function = user_entry;
+        p.flags = pen::e_pen_create_flags::console_app;
+        return p;
+    }
+} // namespace pen
 
-PEN_TRV pen::user_entry(void* params)
+void* pen::user_entry(void* params)
 {
     PEN_LOG("User Thread Entry");
 
@@ -23,7 +32,7 @@ PEN_TRV pen::user_entry(void* params)
     {
         PEN_LOG("User Thread Update");
 
-        pen::thread_sleep_us(16000);
+        pen::thread_sleep_ms(16);
 
         // msg from the engine we want to terminate
         if (pen::semaphore_try_wait(p_thread_info->p_sem_exit))

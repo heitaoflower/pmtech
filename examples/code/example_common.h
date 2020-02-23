@@ -27,17 +27,17 @@ void example_update(ecs::ecs_scene* scene, camera& cam, f32 dt);
 
 namespace physics
 {
-    extern PEN_TRV physics_thread_main(void* params);
+    extern void* physics_thread_main(void* params);
 }
 
-PEN_TRV pen::user_entry(void* params)
+void* pen::user_entry(void* params)
 {
     // unpack the params passed to the thread and signal to the engine it ok to proceed
     pen::job_thread_params* job_params = (pen::job_thread_params*)params;
     pen::job*               p_thread_info = job_params->job_info;
     pen::semaphore_post(p_thread_info->p_sem_continue, 1);
 
-    pen::jobs_create_job(physics::physics_thread_main, 1024 * 10, nullptr, pen::THREAD_START_DETACHED);
+    pen::jobs_create_job(physics::physics_thread_main, 1024 * 10, nullptr, pen::e_thread_start_flags::detached);
 
     // create the main scene and camera
     put::ecs::ecs_scene* main_scene = put::ecs::create_scene("main_scene");
@@ -101,7 +101,7 @@ PEN_TRV pen::user_entry(void* params)
     example_setup(main_scene, main_camera);
 
     f32 frame_time = 0.0f;
-    
+
     while (1)
     {
         static pen::timer* frame_timer = pen::timer_create();

@@ -7,48 +7,51 @@
 
 namespace physics
 {
-    PEN_TRV physics_thread_main(void* params);
+    void* physics_thread_main(void* params);
 
-    enum e_physics_cmd : s32
+    namespace e_cmd
     {
-        CMD_SET_LINEAR_VELOCITY = 1,
-        CMD_SET_ANGULAR_VELOCITY,
-        CMD_SET_LINEAR_FACTOR,
-        CMD_SET_ANGULAR_FACTOR,
-        CMD_SET_TRANSFORM,
-        CMD_ADD_RIGID_BODY,
-        CMD_ADD_GHOST_RIGID_BODY,
-        CMD_ADD_MULTI_BODY,
-        CMD_ADD_COMPOUND_RB,
-        CMD_ADD_COMPOUND_SHAPE,
-        CMD_SET_GRAVITY,
-        CMD_SET_FRICTION,
-        CMD_SET_HINGE_MOTOR,
-        CMD_SET_BUTTON_MOTOR,
-        CMD_SET_MULTI_JOINT_MOTOR, // uses v.x to represent rotation about the joints axis
-        CMD_SET_MULTI_JOINT_POS,
-        CMD_SET_MULTI_JOINT_LIMITS,
-        CMD_SET_MULTI_BASE_VELOCITY,
-        CMD_SET_MULTI_BASE_POS,
-        CMD_SYNC_COMPOUND_TO_MULTI,
-        CMD_SYNC_RIGID_BODY_TRANSFORM,
-        CMD_SYNC_RIGID_BODY_VELOCITY,
-        CMD_SET_P2P_CONSTRAINT_POS,
-        CMD_SET_DAMPING,
-        CMD_SET_GROUP,
-        CMD_REMOVE_FROM_WORLD,
-        CMD_ADD_TO_WORLD,
-        CMD_ATTACH_RB_TO_COMPOUND,
-        CMD_RELEASE_ENTITY,
-        CMD_CAST_RAY,
-        CMD_CAST_SPHERE,
-        CMD_ADD_CONSTRAINT,
-        CMD_ADD_CENTRAL_FORCE,
-        CMD_ADD_CENTRAL_IMPULSE,
-        CMD_CONTACT_TEST,
-        CMD_STEP
-    };
-    
+        enum cmd_t
+        {
+            set_linear_velocity = 1,
+            set_angular_velocity,
+            set_linear_factor,
+            set_angular_factor,
+            set_transform,
+            add_rigid_body,
+            add_ghost_rigid_body,
+            add_multi_body,
+            add_compound_rb,
+            add_compound_shape,
+            set_gravity,
+            set_friction,
+            set_hinge_motor,
+            set_button_motor,
+            set_multi_joint_motor, // uses v.x to represent rotation about the joints axis
+            set_multi_joint_pos,
+            set_multi_joint_limits,
+            set_multi_base_velocity,
+            set_multi_base_pos,
+            sync_compound_to_multi,
+            sync_rigid_body_transform,
+            sync_rigid_body_velocity,
+            set_p2p_constraint_pos,
+            set_damping,
+            set_group,
+            remove_from_world,
+            add_to_world,
+            attach_rb_to_compound,
+            release_entity,
+            cast_ray,
+            cast_sphere,
+            add_constraint,
+            add_central_force,
+            add_central_impulse,
+            contact_test,
+            step
+        };
+    }
+
     namespace e_shape
     {
         enum shape_t
@@ -91,17 +94,17 @@ namespace physics
         };
     }
     typedef e_up_axis::up_axis_t up_axis;
-    
+
     namespace e_create_flags
     {
         enum create_flags_t
         {
             automatic = 0,
-            position = 1<<1,
-            rotation = 1<<2,
-            dimensions = 1<<3,
-            kinematic = 1<<4,
-            set_all_transform = (position | rotation |dimensions)
+            position = 1 << 1,
+            rotation = 1 << 2,
+            dimensions = 1 << 3,
+            kinematic = 1 << 4,
+            set_all_transform = (position | rotation | dimensions)
         };
     }
     typedef u32 create_flags;
@@ -204,29 +207,29 @@ namespace physics
     struct add_p2p_constraint_params
     {
         vec3f position;
-        u32 entity_index;
-        s32 link_index;
-        u32 p2p_index;
+        u32   entity_index;
+        s32   link_index;
+        u32   p2p_index;
     };
 
     struct add_box_params
     {
         vec3f dimensions;
         vec3f position;
-        quat rotation;
-        f32 mass;
+        quat  rotation;
+        f32   mass;
     };
 
     struct set_v3_params
     {
-        u32      object_index;
+        u32   object_index;
         vec3f data;
     };
 
     struct set_multi_v3_params
     {
-        u32 multi_index;
-        u32 link_index;
+        u32   multi_index;
+        u32   link_index;
         vec3f data;
     };
 
@@ -238,9 +241,9 @@ namespace physics
 
     struct set_transform_params
     {
-        u32 object_index;
+        u32   object_index;
         vec3f position;
-        quat rotation;
+        quat  rotation;
     };
 
     struct sync_compound_multi_params
@@ -251,7 +254,7 @@ namespace physics
 
     struct set_damping_params
     {
-        u32 object_index;
+        u32   object_index;
         vec3f linear;
         vec3f angular;
     };
@@ -270,12 +273,13 @@ namespace physics
         s32 link_index;
     };
 
-    struct ray_cast_result
+    struct cast_result
     {
-        vec3f point;
-        vec3f normal;
-        u32   physics_handle;
-        void* user_data;
+        vec3f point = vec3f::zero();
+        vec3f normal = vec3f::zero();
+        u32   physics_handle = 0;
+        bool  set = false;
+        void* user_data = nullptr;
     };
 
     struct ray_cast_params
@@ -285,16 +289,8 @@ namespace physics
         u32   timestamp;
         u32   mask = 0xffffffff;
         u32   group = 0;
-        void* user_data;
-        void (*callback)(const ray_cast_result& result);
-    };
-
-    struct sphere_cast_result
-    {
-        vec3f point;
-        vec3f normal;
-        u32   physics_handle;
-        void* user_data;
+        void* user_data = nullptr;
+        void (*callback)(const cast_result& result) = nullptr;
     };
 
     struct sphere_cast_params
@@ -306,14 +302,17 @@ namespace physics
         u32   timestamp;
         u32   mask = 0xffffffff;
         u32   group = 0;
-        void* user_data;
-        void (*callback)(const sphere_cast_result& result);
+        void* user_data = nullptr;
+        void (*callback)(const cast_result& result) = nullptr;
     };
 
     struct contact
     {
         vec3f normal;
         vec3f pos;
+        u32   group;
+        u32   mask;
+        u32   physics_handle;
     };
 
     struct contact_test_results
@@ -380,10 +379,15 @@ namespace physics
     void add_to_world(const u32& entity_index);
     void remove_from_world(const u32& entity_index);
 
-    void cast_ray(const ray_cast_params& rcp, bool immediate = false); // non immedite will put a cast command in the buffer.
-    void cast_sphere(const sphere_cast_params& rcp,
-                     bool                      immediate = false); // using non immediate may not be thread safe..
+    // callback will be called on completion, from the physics thread
+    void cast_ray(const ray_cast_params& rcp);
+    void cast_sphere(const sphere_cast_params& rcp);
     void contact_test(const contact_test_params& ctp);
+
+    // these casts will give you the result immediately, but might not be thread safe, so far they seem ok though.
+    // the contact test is not thread safe at all.
+    cast_result cast_ray_immediate(const ray_cast_params& rcp);
+    cast_result cast_sphere_immediate(const sphere_cast_params& scp);
 
     void step();
     void set_v3(const u32& entity_index, const vec3f& v3, u32 cmd);

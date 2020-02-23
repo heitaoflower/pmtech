@@ -15,12 +15,11 @@
 #include "pen_json.h"
 #include "pen_string.h"
 #include "pmfx.h"
+#include "renderer_shared.h"
 #include "str_utilities.h"
 #include "timer.h"
 
 #include <fstream>
-
-extern pen::window_creation_params pen_window;
 
 using namespace put;
 using namespace pmfx;
@@ -36,24 +35,31 @@ namespace
     const hash_id k_id_default = PEN_HASH("default");
     const hash_id k_id_disabled = PEN_HASH("disabled");
     
-    enum e_post_process_flags
+    namespace e_pp_flags
     {
-        PP_NONE = 0,
-        PP_ENABLED = (1 << 0),
-        PP_EDITED = (1 << 1),
-        PP_WRITE_NON_AUX = (1 << 2) // writes directly to the specified target bypassing aux / virtual buffers
-    };
+        enum pp_flags
+        {
+            none,
+            enabled = 1<<0,
+            edited = 1<<1,
+            write_non_aux = 1<<2
+        };
+    }
     
-    enum e_view_flags
+    namespace e_view_flags
     {
-        VF_SCENE_VIEW = (1<<0),     // view has scene view to dispatch, if not we may just want to clear or abstract render..
-        VF_CUBEMAP = (1<<1),        // view will be dispatched into a cubemap texture array, 6 times. 1 per face.
-        VF_TEMPLATE = (1<<2),       // dont automatically render. but build the view to be rendered from elsewhere.
-        VF_ABSTRACT = (1<<3),       // abstract views can be used to render view templates, to perform multi-pass rendering.
-        VF_RESOLVE = (1<<4),        // after view has completed, render targets are resolved.
-        VF_GENERATE_MIPS = (1 << 5),// generate mip maps for the render target after resolving
-        VF_COMPUTE = (1<<6)         // runs a compute job instead of render job
-    };
+        enum view_flags
+        {
+            scene_view = (1<<0),        // view has scene view to dispatch, if not we may just want to clear or abstract render..
+            cubemap = (1<<1),           // view will be dispatched into a cubemap texture array, 6 times. 1 per face.
+            template_view = (1<<2),     // dont automatically render. but build the view to be rendered from elsewhere.
+            abstract = (1<<3),          // abstract views can be used to render view templates, to perform multi-pass rendering.
+            resolve = (1<<4),           // after view has completed, render targets are resolved.
+            generate_mips = (1 << 5),   // generate mip maps for the render target after resolving
+            compute = (1<<6),           // runs a compute job instead of render job
+            cubemap_array = (1<<7)
+        };
+    }
 
     struct mode_map
     {
@@ -155,7 +161,8 @@ namespace
     };
     
     const mode_map render_flags_map[] = {
-        "forward_lit", ecs::RENDER_FORWARD_LIT,
+        "forward_lit", e_scene_render_flags::forward_lit,
+        "deferred_lit", e_scene_render_flags::deferred_lit,
         nullptr, 0
     };
     
@@ -168,9 +175,9 @@ namespace
     
     const mode_map k_view_types[] = {
         "normal", 0,
-        "template", VF_TEMPLATE,
-        "abstract", VF_ABSTRACT,
-        "compute", VF_COMPUTE
+        "template", e_view_flags::template_view,
+        "abstract", e_view_flags::abstract,
+        "compute", e_view_flags::compute
     };
     // clang-format on
 
@@ -231,7 +238,7 @@ namespace
         vec4f*                       sampler_info;
 
         // post process
-        u32                      post_process_flags = PP_NONE;
+        u32                      post_process_flags = e_pp_flags::none;
         Str                      post_process_name;
         std::vector<Str>         post_process_chain;
         std::vector<view_params> post_process_views;
@@ -251,12 +258,12 @@ namespace
 
     struct render_state
     {
-        Str             name;
-        hash_id         id_name;
-        hash_id         hash;
-        u32             handle;
-        render_state_t  type;
-        bool            copy;
+        Str            name;
+        hash_id        id_name;
+        hash_id        hash;
+        u32            handle;
+        render_state_t type;
+        bool           copy;
     };
 
     struct filter_kernel
@@ -295,16 +302,13 @@ namespace
         hash_id id_name;
     };
 
-    // Views / Sets
-    std::vector<Str>                 s_post_process_names;    // List of post process names (ie bloom, dof.. etc)
-    std::vector<view_params>         s_views;                 // List of all view parameters
-    std::vector<Str>                 s_view_sets;             // list of view set names (ie. forward, deferred.. etc)
-    std::vector<Str>                 s_view_set;              // list of view names in the current set
-    Str                              s_view_set_name;         // Name of the current view set
-    Str                              s_edited_view_set_name;  // Name of the user selected view
-    std::vector<edited_post_process> s_edited_post_processes; // User edited post processes
-
-    // Render Resources
+    std::vector<Str>                     s_post_process_names;    // List of post process names (ie bloom, dof.. etc)
+    std::vector<view_params>             s_views;                 // List of all view parameters
+    std::vector<Str>                     s_view_sets;             // list of view set names (ie. forward, deferred.. etc)
+    std::vector<Str>                     s_view_set;              // list of view names in the current set
+    Str                                  s_view_set_name;         // Name of the current view set
+    Str                                  s_edited_view_set_name;  // Name of the user selected view
+    std::vector<edited_post_process>     s_edited_post_processes; // User edited post processes
     std::vector<reg_scene>               s_scenes;
     std::vector<reg_camera>              s_cameras;
     std::vector<scene_view_renderer>     s_scene_view_renderers;
@@ -350,8 +354,10 @@ namespace put
 
         void get_rt_dimensions(s32 rt_w, s32 rt_h, f32 rt_r, f32& w, f32& h)
         {
-            w = (f32)pen_window.width;
-            h = (f32)pen_window.height;
+            s32 iw, ih;
+            pen::window_get_size(iw, ih);
+            w = (f32)iw;
+            h = (f32)ih;
 
             if (rt_r != 0)
             {
@@ -370,7 +376,14 @@ namespace put
             f32 w, h;
             get_rt_dimensions(rt_w, rt_h, rt_r, w, h);
 
-            vp_out = {vp_in[0] * w, vp_in[1] * h, vp_in[2] * w, vp_in[3] * h, 0.0f, 1.0f};
+            if (rt_r != 0)
+            {
+                vp_out = {vp_in[0], vp_in[1], PEN_BACK_BUFFER_RATIO, 1.0f / rt_r, 0.0f, 1.0f};
+            }
+            else
+            {
+                vp_out = {vp_in[0] * w, vp_in[1] * h, vp_in[2] * w, vp_in[3] * h, 0.0f, 1.0f};
+            }
         }
 
         u32 mode_from_string(const mode_map* map, const c8* str, u32 default_value)
@@ -598,18 +611,18 @@ namespace put
                 rs.name = state.name();
                 rs.id_name = PEN_HASH(rs.name);
                 rs.type = e_render_state::sampler;
-				rs.copy = false;
+                rs.copy = false;
 
                 render_state* existing_state = get_state_by_hash(hh, e_render_state::sampler);
-				if (existing_state)
-				{
-					rs.handle = existing_state->handle;
-					rs.copy = true;
-				}
-				else
-				{
-					rs.handle = pen::renderer_create_sampler(scp);
-				}
+                if (existing_state)
+                {
+                    rs.handle = existing_state->handle;
+                    rs.copy = true;
+                }
+                else
+                {
+                    rs.handle = pen::renderer_create_sampler(scp);
+                }
 
                 s_render_states.push_back(rs);
             }
@@ -643,18 +656,18 @@ namespace put
                 rs.name = state.name();
                 rs.id_name = PEN_HASH(rs.name);
                 rs.type = e_render_state::rasterizer;
-				rs.copy = false;
+                rs.copy = false;
 
                 render_state* existing_state = get_state_by_hash(hh, e_render_state::rasterizer);
-				if (existing_state)
-				{
-					rs.handle = existing_state->handle;
-					rs.copy = true;
-				}
-				else
-				{
-					rs.handle = pen::renderer_create_rasterizer_state(rcp);
-				}
+                if (existing_state)
+                {
+                    rs.handle = existing_state->handle;
+                    rs.copy = true;
+                }
+                else
+                {
+                    rs.handle = pen::renderer_create_rasterizer_state(rcp);
+                }
 
                 s_render_states.push_back(rs);
             }
@@ -692,12 +705,11 @@ namespace put
                 hash_id id_blend = PEN_HASH(state.name().c_str());
 
                 // avoid name collisions..
-                bool exists = false;
                 for (auto& p : s_partial_blend_states)
                     if (p.id_name == id_blend)
                         return;
 
-                s_partial_blend_states.push_back({ id_blend, rtb });
+                s_partial_blend_states.push_back({id_blend, rtb});
 
                 // create a generic single blend for code use
                 pen::blend_creation_params bcp;
@@ -712,7 +724,7 @@ namespace put
                 rs.id_name = PEN_HASH(state.name().c_str());
                 rs.type = e_render_state::blend;
                 rs.handle = pen::renderer_create_blend_state(bcp);
-				rs.copy = false;
+                rs.copy = false;
 
                 s_render_states.push_back(rs);
             }
@@ -780,18 +792,18 @@ namespace put
                 rs.name = state.name();
                 rs.id_name = PEN_HASH(rs.name);
                 rs.type = e_render_state::depth_stencil;
-				rs.copy = false;
+                rs.copy = false;
 
                 render_state* existing_state = get_state_by_hash(hh, e_render_state::depth_stencil);
-				if (existing_state)
-				{
-					rs.handle = existing_state->handle;
-					rs.copy = true;
-				}
-				else
-				{
-					rs.handle = pen::renderer_create_depth_stencil_state(dscp);
-				}
+                if (existing_state)
+                {
+                    rs.handle = existing_state->handle;
+                    rs.copy = true;
+                }
+                else
+                {
+                    rs.handle = pen::renderer_create_depth_stencil_state(dscp);
+                }
 
                 s_render_states.push_back(rs);
             }
@@ -951,18 +963,18 @@ namespace put
             rs.name = view_name;
             rs.id_name = PEN_HASH(view_name);
             rs.type = e_render_state::blend;
-			rs.copy = false;
+            rs.copy = false;
 
             render_state* existing_state = get_state_by_hash(hh, e_render_state::blend);
-			if (existing_state)
-			{
-				rs.handle = existing_state->handle;
-				rs.copy = true;
-			}
-			else
-			{
-				rs.handle = pen::renderer_create_blend_state(bcp);
-			}
+            if (existing_state)
+            {
+                rs.handle = existing_state->handle;
+                rs.copy = true;
+            }
+            else
+            {
+                rs.handle = pen::renderer_create_blend_state(bcp);
+            }
 
             s_render_states.push_back(rs);
 
@@ -1112,7 +1124,7 @@ namespace put
                             if (type == "cube")
                             {
                                 tcp.collection_type = pen::TEXTURE_COLLECTION_CUBE;
-                                tcp.flags |= PEN_RESOURCE_MISC_TEXTURECUBE;
+                                //tcp.flags |= PEN_RESOURCE_MISC_TEXTURECUBE;
                                 tcp.num_arrays = 6;
                             }
                             else if (type == "array")
@@ -1123,6 +1135,7 @@ namespace put
                             else if (type == "cube_array")
                             {
                                 tcp.collection_type = pen::TEXTURE_COLLECTION_CUBE_ARRAY;
+                                //tcp.flags |= PEN_RESOURCE_MISC_TEXTURECUBE;
                                 tcp.num_arrays = r["num_arrays"].as_u32(6);
                             }
                         }
@@ -1540,12 +1553,13 @@ namespace put
                             if (r.collection == pen::TEXTURE_COLLECTION_CUBE)
                             {
                                 new_view.num_arrays = 6;
-                                new_view.view_flags |= VF_CUBEMAP;
+                                new_view.view_flags |= e_view_flags::cubemap;
                             }
-                            
+
                             if (r.collection == pen::TEXTURE_COLLECTION_CUBE_ARRAY)
                             {
                                 new_view.num_arrays = r.num_arrays;
+                                new_view.view_flags |= e_view_flags::cubemap_array;
                             }
 
                             if (cur_rt == 0)
@@ -1587,8 +1601,8 @@ namespace put
 
                     if (!found)
                     {
-                        dev_console_log_level(dev_ui::console_level::error, "[error] render controller: missing render target - %s",
-                                              target_str.c_str());
+                        dev_console_log_level(dev_ui::console_level::error,
+                                              "[error] render controller: missing render target - %s", target_str.c_str());
                         valid = false;
                     }
                 }
@@ -1611,7 +1625,7 @@ namespace put
 
                 if (num_resolve > 0)
                 {
-                    new_view.view_flags |= VF_RESOLVE;
+                    new_view.view_flags |= e_view_flags::resolve;
 
                     if (num_resolve != num_targets)
                         dev_console_log_level(
@@ -1619,9 +1633,9 @@ namespace put
                             "[error] pmfx - view %s number of resolves %i do not match number of targets %i'",
                             new_view.name.c_str(), num_resolve, num_targets);
                 }
-                
-                if(view["generate_mip_maps"].as_bool())
-                    new_view.view_flags |= VF_GENERATE_MIPS;
+
+                if (view["generate_mip_maps"].as_bool())
+                    new_view.view_flags |= e_view_flags::generate_mips;
 
                 // viewport
                 pen::json viewport = view["viewport"];
@@ -1774,17 +1788,17 @@ namespace put
                 }
 
                 if (scene_views.size() > 0)
-                    new_view.view_flags |= VF_SCENE_VIEW;
+                    new_view.view_flags |= e_view_flags::scene_view;
 
                 // sampler bindings
                 parse_sampler_bindings(view, new_view);
 
                 new_view.post_process_name = view["post_process"].as_cstr();
                 if (!new_view.post_process_name.empty())
-                    new_view.post_process_flags |= PP_ENABLED;
+                    new_view.post_process_flags |= e_pp_flags::enabled;
 
                 if (view["pp_write_non_aux"].as_bool())
-                    new_view.post_process_flags |= PP_WRITE_NON_AUX;
+                    new_view.post_process_flags |= e_pp_flags::write_non_aux;
 
                 // filter id for post process passes
                 Str fk = view["filter_kernel"].as_str();
@@ -2074,7 +2088,7 @@ namespace put
                 u32 pass_counter = 0;
                 for (auto& p : pp_views)
                 {
-                    bool non_aux = p.post_process_flags & PP_WRITE_NON_AUX;
+                    bool non_aux = p.post_process_flags & e_pp_flags::write_non_aux;
                     for (u32 i = 0; i < p.num_colour_targets; ++i)
                         p.render_targets[i] = get_virtual_target(p.id_render_target[i], e_vrt_mode::write, non_aux);
 
@@ -2440,7 +2454,7 @@ namespace put
             // per view post processes
             for (auto& v : s_views)
             {
-                if (v.post_process_flags & PP_ENABLED)
+                if (v.post_process_flags & e_pp_flags::enabled)
                 {
                     if (!load_edited_post_process(render_config, pp_config, j_views, v))
                         load_post_process(render_config, pp_config, j_views, v);
@@ -2467,11 +2481,13 @@ namespace put
         void pmfx_config_hotload()
         {
             // wait a bit and flush the gpu
+            /*
             for (u32 i = 0; i < 6; ++i)
             {
                 pen::renderer_present();
                 pen::renderer_consume_cmd_buffer();
             }
+            */
 
             release_script_resources();
 
@@ -2497,10 +2513,10 @@ namespace put
         {
             for (auto& rs : s_render_states)
             {
-				if (rs.copy)
-					continue;
+                if (rs.copy)
+                    continue;
 
-				// PEN_LOG("release state %i : %s (%i)\n", rs.type, rs.name.c_str(), rs.handle);
+                // PEN_LOG("release state %i : %s (%i)\n", rs.type, rs.name.c_str(), rs.handle);
 
                 switch (rs.type)
                 {
@@ -2567,7 +2583,8 @@ namespace put
             if (!pmfx::set_technique_perm(sv.pmfx_shader, sv.technique))
                 return;
 
-            pen::renderer_set_constant_buffer(sv.cb_view, e_cbuffer_location::per_pass_view, pen::CBUFFER_BIND_PS | pen::CBUFFER_BIND_VS);
+            pen::renderer_set_constant_buffer(sv.cb_view, e_cbuffer_location::per_pass_view,
+                                              pen::CBUFFER_BIND_PS | pen::CBUFFER_BIND_VS);
 
             pen::renderer_set_index_buffer(quad->index_buffer, quad->index_type, 0);
             pen::renderer_set_vertex_buffer(quad->vertex_buffer, 0, quad->vertex_size, 0);
@@ -2635,6 +2652,7 @@ namespace put
             static ecs::geometry_resource* quad = ecs::get_geometry_resource(PEN_HASH("full_screen_quad"));
 
             pen::renderer_set_targets(&v.stashed_output_rt, 1, PEN_NULL_DEPTH_BUFFER);
+
             pen::renderer_set_viewport(vp);
             pen::renderer_set_scissor_rect({vp.x, vp.y, vp.width, vp.height});
 
@@ -2668,7 +2686,10 @@ namespace put
 
             // rt texture may still be bound on output
             // todo.. remove this? need to check with d3d11 validation layer
-            pen::viewport vp = {0, 0, (f32)pen_window.width, (f32)pen_window.height};
+
+            s32 w, h;
+            pen::window_get_size(w, h);
+            pen::viewport vp = {0, 0, (f32)w, (f32)h};
             pen::renderer_set_viewport(vp);
             pen::renderer_set_scissor_rect({vp.x, vp.y, vp.width, vp.height});
             pen::renderer_set_targets(PEN_BACK_BUFFER_COLOUR, PEN_BACK_BUFFER_DEPTH);
@@ -2676,24 +2697,24 @@ namespace put
             // rt texture may still be bound on input
             for (s32 i = 0; i < e_pmfx_constants::max_sampler_bindings; ++i)
                 pen::renderer_set_texture(0, 0, i, pen::TEXTURE_BIND_PS | pen::TEXTURE_BIND_VS);
-            
+
             // disable state
             pen::renderer_set_depth_stencil_state(get_render_state(k_id_disabled, e_render_state::depth_stencil));
             pen::renderer_set_blend_state(get_render_state(k_id_disabled, e_render_state::blend));
             pen::renderer_set_rasterizer_state(get_render_state(k_id_disabled, e_render_state::rasterizer));
 
             // resolve colour
-            if(v.view_flags & VF_RESOLVE)
+            if (v.view_flags & e_view_flags::resolve)
             {
                 for (u32 i = 0; i < v.num_colour_targets; ++i)
                 {
                     if (v.resolve_method[i] == 0)
                         continue;
-                    
+
                     pmfx::set_technique_perm(pmfx_resolve, v.resolve_method[i]);
                     pen::renderer_resolve_target(v.render_targets[i], pen::RESOLVE_CUSTOM);
                 }
-                
+
                 // resolve depth
                 if (is_valid_non_null(v.depth_target))
                 {
@@ -2703,15 +2724,15 @@ namespace put
             }
 
             // generate mips
-            if(v.view_flags & VF_GENERATE_MIPS)
+            if (v.view_flags & e_view_flags::generate_mips)
             {
                 for (u32 i = 0; i < v.num_colour_targets; ++i)
                     pen::renderer_resolve_target(v.render_targets[i], pen::RESOLVE_GENERATE_MIPS);
-                
+
                 if (is_valid_non_null(v.depth_target))
                     pen::renderer_resolve_target(v.depth_target, pen::RESOLVE_GENERATE_MIPS);
             }
-            
+
             // set textures and buffers back to prevent d3d validation layer complaining
             pen::renderer_set_targets(PEN_BACK_BUFFER_COLOUR, PEN_BACK_BUFFER_DEPTH);
             for (s32 i = 0; i < e_pmfx_constants::max_sampler_bindings; ++i)
@@ -2721,7 +2742,7 @@ namespace put
         void render_view(view_params& v)
         {
             // compute doesnt need render pipeline setup
-            if(v.view_flags & VF_COMPUTE)
+            if (v.view_flags & e_view_flags::compute)
             {
                 scene_view sv;
                 sv.scene = v.scene;
@@ -2730,19 +2751,25 @@ namespace put
                 sv.camera = v.camera;
                 sv.pmfx_shader = v.pmfx_shader;
                 sv.permutation = v.technique_permutation;
-                
+
                 for (s32 rf = 0; rf < v.render_functions.size(); ++rf)
                     v.render_functions[rf](sv);
-                
+
                 return;
             }
-            
+
+            // caps based exclusion
+            const pen::renderer_info& ri = pen::renderer_get_info();
+            if (v.view_flags & e_view_flags::cubemap_array)
+                if (!(ri.caps & PEN_CAPS_TEXTURE_CUBE_ARRAY))
+                    return;
+
             // render pipeline
-            
+
             // early out.. nothing to render
             if (v.num_colour_targets == 0 && v.depth_target == PEN_INVALID_HANDLE)
                 return;
-            
+
             static u32 cb_2d = PEN_INVALID_HANDLE;
             static u32 cb_sampler_info = PEN_INVALID_HANDLE;
             if (!is_valid(cb_2d))
@@ -2767,16 +2794,17 @@ namespace put
             // render state
             pen::viewport vp = {0};
             get_rt_viewport(v.rt_width, v.rt_height, v.rt_ratio, v.viewport, vp);
-            pen::renderer_set_viewport(vp);
-            pen::renderer_set_scissor_rect({vp.x, vp.y, vp.width, vp.height});
             pen::renderer_set_depth_stencil_state(v.depth_stencil_state);
             pen::renderer_set_stencil_ref(v.stencil_ref);
             pen::renderer_set_rasterizer_state(v.raster_state);
             pen::renderer_set_blend_state(v.blend_state);
 
+            // we need the literal size not ratio
+            pen::viewport vvp = _renderer_resolve_viewport_ratio(vp);
+
             // create 2d view proj matrix
-            f32 W = 2.0f / vp.width;
-            f32 H = 2.0f / vp.height;
+            f32 W = 2.0f / vvp.width;
+            f32 H = 2.0f / vvp.height;
             f32 mvp[4][4] = {{W, 0.0, 0.0, 0.0}, {0.0, H, 0.0, 0.0}, {0.0, 0.0, 1.0, 0.0}, {-1.0, -1.0, 0.0, 1.0}};
             pen::renderer_update_buffer(cb_2d, mvp, sizeof(mvp), 0);
 
@@ -2799,11 +2827,11 @@ namespace put
             {
                 sv.array_index = a;
                 sv.num_arrays = v.num_arrays;
-                
+
                 // generate 3d view proj matrix
                 if (v.camera)
                 {
-                    if (v.view_flags & VF_CUBEMAP)
+                    if (v.view_flags & e_view_flags::cubemap)
                         put::camera_set_cubemap_face(v.camera, a);
 
                     put::camera_update_shader_constants(v.camera);
@@ -2813,7 +2841,7 @@ namespace put
                 {
                     // this code path is untested.
                     static put::camera c;
-                    put::camera_create_orthographic(&c, vp.x, vp.width, vp.y, vp.height, 0.0f, 1.0f);
+                    put::camera_create_orthographic(&c, vvp.x, vvp.width, vvp.y, vvp.height, 0.0f, 1.0f);
                     put::camera_update_shader_constants(&c);
                     sv.cb_view = c.cbuffer;
                 }
@@ -2821,6 +2849,8 @@ namespace put
                 // bind targets before samplers..
                 // so that ping-pong buffers get unbound from rt before being bound on samplers
                 pen::renderer_set_targets(v.render_targets, v.num_colour_targets, v.depth_target, a);
+                pen::renderer_set_viewport(vp);
+                pen::renderer_set_scissor_rect({vp.x, vp.y, vp.width, vp.height});
                 pen::renderer_clear(v.clear_state, a);
 
                 // bind view samplers.. render targets, global textures
@@ -2844,19 +2874,22 @@ namespace put
                 if (num_samplers > 0)
                 {
                     pen::renderer_update_buffer(cb_sampler_info, v.sampler_info, num_samplers * sizeof(vec4f));
-                    pen::renderer_set_constant_buffer(cb_sampler_info, e_cbuffer_location::sampler_info, pen::CBUFFER_BIND_PS);
+                    pen::renderer_set_constant_buffer(cb_sampler_info, e_cbuffer_location::sampler_info,
+                                                      pen::CBUFFER_BIND_PS);
                 }
 
                 // filters
                 if (is_valid(v.cbuffer_filter))
-                    pen::renderer_set_constant_buffer(v.cbuffer_filter, e_cbuffer_location::filter_kernel, pen::CBUFFER_BIND_PS);
+                    pen::renderer_set_constant_buffer(v.cbuffer_filter, e_cbuffer_location::filter_kernel,
+                                                      pen::CBUFFER_BIND_PS);
 
                 // technique cbuffer
                 if (is_valid(v.cbuffer_technique))
                 {
                     pen::renderer_update_buffer(v.cbuffer_technique, v.technique_constants.data,
                                                 sizeof(technique_constant_data));
-                    pen::renderer_set_constant_buffer(v.cbuffer_technique, e_cbuffer_location::material_constants, pen::CBUFFER_BIND_PS);
+                    pen::renderer_set_constant_buffer(v.cbuffer_technique, e_cbuffer_location::material_constants,
+                                                      pen::CBUFFER_BIND_PS);
                 }
 
                 // call render functions and make draw calls
@@ -2864,7 +2897,7 @@ namespace put
                     v.render_functions[rf](sv);
             }
 
-            if (v.view_flags & (VF_RESOLVE | VF_GENERATE_MIPS))
+            if (v.view_flags & (e_view_flags::resolve | e_view_flags::generate_mips))
                 resolve_view_targets(v);
 
             // for debug
@@ -2900,10 +2933,10 @@ namespace put
         {
             for (auto& v : s_views)
             {
-                if (v.view_flags & VF_TEMPLATE)
+                if (v.view_flags & e_view_flags::template_view)
                     continue;
 
-                if (v.view_flags & VF_ABSTRACT)
+                if (v.view_flags & e_view_flags::abstract)
                 {
                     render_abstract_view(v);
                 }
@@ -2911,7 +2944,7 @@ namespace put
                 {
                     render_view(v);
 
-                    if (v.post_process_flags & PP_ENABLED)
+                    if (v.post_process_flags & e_pp_flags::enabled)
                         render_post_process(v);
                 }
             }
@@ -3176,7 +3209,7 @@ namespace put
                     s32 c = 0;
                     for (auto& v : s_views)
                     {
-                        if (v.post_process_flags & PP_ENABLED)
+                        if (v.post_process_flags & e_pp_flags::enabled)
                         {
                             view_items.push_back(v.name.c_str());
                             pp_view_indices.push_back(c);

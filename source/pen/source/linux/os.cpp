@@ -1,13 +1,14 @@
 // os.cpp
 // Copyright 2014 - 2019 Alex Dixon.
 // License: https://github.com/polymonster/pmtech/blob/master/license.md
-
 #include "GL/glew.h"
 
 #include "console.h"
+#include "hash.h"
 #include "input.h"
 #include "os.h"
 #include "pen.h"
+#include "renderer.h"
 #include "threads.h"
 #include "timer.h"
 #include "types.h"
@@ -25,14 +26,9 @@
 
 using namespace pen;
 
-namespace pen
-{
-    extern void renderer_init(void* user_data, bool wait_for_jobs);
-}
-
 // pen required externs
-extern window_creation_params pen_window;
-pen::user_info                pen_user_info;
+window_creation_params pen_window;
+pen::user_info         pen_user_info;
 
 // glx / gl stuff
 #define GLX_CONTEXT_MAJOR_VERSION_ARB 0x2091
@@ -42,12 +38,19 @@ pen::user_info                pen_user_info;
 #define GLX_CONTEXT_CORE_PROFILE_BIT_ARB 0x00000001
 
 typedef GLXContext (*glXCreateContextAttribsARBProc)(Display*, GLXFBConfig, GLXContext, Bool, const int*);
-GLXContext   _gl_context = 0;
-Display*     _display;
-Window       _window;
-window_frame _window_frame;
-bool         _invalidate_window_frame = false;
 
+static int visual_attribs[] = {GLX_X_RENDERABLE, True, GLX_DRAWABLE_TYPE, GLX_WINDOW_BIT, GLX_RENDER_TYPE, GLX_RGBA_BIT,
+                               GLX_X_VISUAL_TYPE, GLX_TRUE_COLOR, GLX_RED_SIZE, 8, GLX_GREEN_SIZE, 8, GLX_BLUE_SIZE, 8,
+                               GLX_ALPHA_SIZE, 8, GLX_DEPTH_SIZE, 24, GLX_STENCIL_SIZE, 8, GLX_DOUBLEBUFFER, True,
+                               // GLX_SAMPLE_BUFFERS  , 1,
+                               // GLX_SAMPLES         , 4,
+                               None};
+
+GLXContext _gl_context = 0;
+Display*   _display;
+Window     _window;
+
+// externs for the gl implementation
 void pen_make_gl_context_current()
 {
     glXMakeCurrent(_display, _window, _gl_context);
@@ -58,133 +61,201 @@ void pen_gl_swap_buffers()
     glXSwapBuffers(_display, _window);
 }
 
-static int visual_attribs[] = {GLX_X_RENDERABLE, True, GLX_DRAWABLE_TYPE, GLX_WINDOW_BIT, GLX_RENDER_TYPE, GLX_RGBA_BIT,
-                               GLX_X_VISUAL_TYPE, GLX_TRUE_COLOR, GLX_RED_SIZE, 8, GLX_GREEN_SIZE, 8, GLX_BLUE_SIZE, 8,
-                               GLX_ALPHA_SIZE, 8, GLX_DEPTH_SIZE, 24, GLX_STENCIL_SIZE, 8, GLX_DOUBLEBUFFER, True,
-                               // GLX_SAMPLE_BUFFERS  , 1,
-                               // GLX_SAMPLES         , 4,
-                               None};
-
-static bool ctx_error_occured = false;
-static int  ctx_error_handler(Display* dpy, XErrorEvent* ev)
+namespace
 {
-    PEN_LOG("context error %i", ev->error_code);
-    ctx_error_occured = true;
-    return 0;
-}
+    XIM          _xim;
+    XIC          _xic;
+    u32          s_error_code = 0;
+    bool         ctx_error_occured = false;
+    window_frame _window_frame;
+    bool         _invalidate_window_frame = false;
 
-void users()
-{
-    static struct passwd* pw = getpwuid(getuid());
-    const char*           homedir = pw->pw_dir;
-
-    pen_user_info.user_name = &homedir[6];
-    PEN_LOG(pen_user_info.user_name);
-}
-
-static u32 s_error_code = 0;
-int        main(int argc, char* argv[])
-{
-    Visual*              visual;
-    int                  depth;
-    XSetWindowAttributes frame_attributes;
-
-    _display = XOpenDisplay(NULL);
-    visual = DefaultVisual(_display, 0);
-    depth = DefaultDepth(_display, 0);
-
-    // Check glx version
-    s32 glx_major, glx_minor = 0;
-    glXQueryVersion(_display, &glx_major, &glx_minor);
-
-    // glx setup
-    const char* glxExts = glXQueryExtensionsString(_display, DefaultScreen(_display));
-
-    ctx_error_occured = false;
-    int (*oldHandler)(Display*, XErrorEvent*) = XSetErrorHandler(&ctx_error_handler);
-
-    // find fb with matching samples
-    s32          fbcount;
-    s32          chosen_fb = 0;
-    GLXFBConfig* fbc = glXChooseFBConfig(_display, DefaultScreen(_display), visual_attribs, &fbcount);
-    for (int i = 0; i < fbcount; ++i)
+    void users()
     {
-        XVisualInfo* vi = glXGetVisualFromFBConfig(_display, fbc[i]);
+        static struct passwd* pw = getpwuid(getuid());
+        const char*           homedir = pw->pw_dir;
+        pen_user_info.user_name = &homedir[6];
+    }
 
-        int samp_buf, samples;
-        glXGetFBConfigAttrib(_display, fbc[i], GLX_SAMPLE_BUFFERS, &samp_buf);
-        glXGetFBConfigAttrib(_display, fbc[i], GLX_SAMPLES, &samples);
+    int ctx_error_handler(Display* dpy, XErrorEvent* ev)
+    {
+        PEN_LOG("CONTEXT ERROR %i", ev->error_code);
+        ctx_error_occured = true;
+        return 0;
+    }
 
-        if (samples == pen_window.sample_count)
+    int pen_run_windowed()
+    {
+        Visual*              visual;
+        int                  depth;
+        XSetWindowAttributes frame_attributes;
+
+        _display = XOpenDisplay(NULL);
+        visual = DefaultVisual(_display, 0);
+        depth = DefaultDepth(_display, 0);
+
+        // Check glx version
+        s32 glx_major, glx_minor = 0;
+        glXQueryVersion(_display, &glx_major, &glx_minor);
+
+        // glx setup
+        const char* glxExts = glXQueryExtensionsString(_display, DefaultScreen(_display));
+
+        ctx_error_occured = false;
+        int (*oldHandler)(Display*, XErrorEvent*) = XSetErrorHandler(&ctx_error_handler);
+
+        // find fb with matching samples
+        s32          fbcount;
+        s32          chosen_fb = 0;
+        GLXFBConfig* fbc = glXChooseFBConfig(_display, DefaultScreen(_display), visual_attribs, &fbcount);
+        for (int i = 0; i < fbcount; ++i)
         {
-            chosen_fb = i;
-            break;
+            XVisualInfo* vi = glXGetVisualFromFBConfig(_display, fbc[i]);
+
+            int samp_buf, samples;
+            glXGetFBConfigAttrib(_display, fbc[i], GLX_SAMPLE_BUFFERS, &samp_buf);
+            glXGetFBConfigAttrib(_display, fbc[i], GLX_SAMPLES, &samples);
+
+            if (samples == pen_window.sample_count)
+            {
+                chosen_fb = i;
+                break;
+            }
         }
+
+        GLXFBConfig best_fbc = fbc[chosen_fb];
+
+        // Create window
+        XVisualInfo* vi = glXGetVisualFromFBConfig(_display, best_fbc);
+
+        XSetWindowAttributes swa;
+        Colormap             cmap;
+        swa.colormap = cmap = XCreateColormap(_display, RootWindow(_display, vi->screen), vi->visual, AllocNone);
+        swa.background_pixmap = None;
+        swa.border_pixel = 0;
+        swa.event_mask = StructureNotifyMask;
+
+        _window = XCreateWindow(_display, RootWindow(_display, vi->screen), 0, 0, pen_window.width, pen_window.height, 0,
+                                vi->depth, InputOutput, vi->visual, CWBorderPixel | CWColormap | CWEventMask, &swa);
+
+        XStoreName(_display, _window, pen_window.window_title);
+        XSelectInput(_display, _window,
+                     ExposureMask | StructureNotifyMask | ButtonPressMask | ButtonReleaseMask | KeyPressMask |
+                         KeyReleaseMask | ConfigureNotify);
+
+        // Create Gl Context
+        glXCreateContextAttribsARBProc glXCreateContextAttribsARB = 0;
+        glXCreateContextAttribsARB =
+            (glXCreateContextAttribsARBProc)glXGetProcAddressARB((const GLubyte*)"glXCreateContextAttribsARB");
+
+        // Pmtech supports minimum OpenGL 3.1, just try brute force in reverse order to get the highest
+        for (s32 major = 4; major > 2; --major)
+        {
+            for (s32 minor = 6; minor >= 0; --minor)
+            {
+                int context_attribs[] = {GLX_CONTEXT_MAJOR_VERSION_ARB, major, GLX_CONTEXT_MINOR_VERSION_ARB, minor, None};
+
+                _gl_context = glXCreateContextAttribsARB(_display, best_fbc, 0, True, context_attribs);
+                if (_gl_context)
+                    goto found_context;
+            }
+        }
+        if (ctx_error_occured || !_gl_context)
+        {
+            PEN_LOG("ERROR: OpenGL 3.1+ Context Failed to create");
+            return 1;
+        }
+    found_context:
+
+        XMapWindow(_display, _window);
+
+        // obtain input context
+        _xim = XOpenIM(_display, NULL, NULL, NULL);
+        if (_xim == NULL)
+        {
+            PEN_LOG("ERROR: Could not open input method\n");
+            return 1;
+        }
+
+        XIMStyles* styles;
+        XIMStyle   xim_requested_style;
+        char*      failed_arg;
+        failed_arg = XGetIMValues(_xim, XNQueryInputStyle, &styles, NULL);
+        if (failed_arg != NULL)
+        {
+            PEN_LOG("ERROR: XIM Can't get styles\n");
+            return 1;
+        }
+
+        _xic = XCreateIC(_xim, XNInputStyle, XIMPreeditNothing | XIMStatusNothing, XNClientWindow, _window, NULL);
+        if (_xic == NULL)
+        {
+            printf("ERROR: Could not open IC\n");
+            return 1;
+        }
+
+        XSetICFocus(_xic);
+
+        // Make current and init glew
+        pen_make_gl_context_current();
+
+        glewExperimental = true;
+        GLenum err = glewInit();
+        if (err != GLEW_OK)
+        {
+            PEN_LOG("ERROR: glewInit failed: %s\n", glewGetErrorString(err));
+            return 1;
+        }
+
+        // inits renderer and loops in wait for jobs, calling os update
+        renderer_init(nullptr, true);
+
+        // exit, kill other threads and wait
+        pen::jobs_terminate_all();
+
+        XDestroyWindow(_display, _window);
+        XCloseDisplay(_display);
+
+        return s_error_code;
     }
 
-    GLXFBConfig best_fbc = fbc[chosen_fb];
-
-    // Create window
-    XVisualInfo* vi = glXGetVisualFromFBConfig(_display, best_fbc);
-
-    XSetWindowAttributes swa;
-    Colormap             cmap;
-    swa.colormap = cmap = XCreateColormap(_display, RootWindow(_display, vi->screen), vi->visual, AllocNone);
-    swa.background_pixmap = None;
-    swa.border_pixel = 0;
-    swa.event_mask = StructureNotifyMask;
-
-    _window = XCreateWindow(_display, RootWindow(_display, vi->screen), 0, 0, pen_window.width, pen_window.height, 0,
-                            vi->depth, InputOutput, vi->visual, CWBorderPixel | CWColormap | CWEventMask, &swa);
-
-    XStoreName(_display, _window, pen_window.window_title);
-    XSelectInput(_display, _window,
-                 ExposureMask | StructureNotifyMask | ButtonPressMask | ButtonReleaseMask | KeyPressMask | KeyReleaseMask |
-                     ConfigureNotify);
-
-    // Create Gl Context
-    glXCreateContextAttribsARBProc glXCreateContextAttribsARB = 0;
-    glXCreateContextAttribsARB =
-        (glXCreateContextAttribsARBProc)glXGetProcAddressARB((const GLubyte*)"glXCreateContextAttribsARB");
-
-    int context_attribs[] = {GLX_CONTEXT_MAJOR_VERSION_ARB, 3, GLX_CONTEXT_MINOR_VERSION_ARB, 1, None};
-
-    _gl_context = glXCreateContextAttribsARB(_display, best_fbc, 0, True, context_attribs);
-
-    if (ctx_error_occured || !_gl_context)
+    int pen_run_console_app()
     {
-        PEN_LOG("Error: OpenGL 3.1 Context Failed to create");
-        return 1;
+        for (;;)
+        {
+            if (!pen::os_update())
+                break;
+
+            pen::thread_sleep_us(100);
+        }
+
+        pen::jobs_terminate_all();
+
+        return s_error_code;
     }
+} // namespace
 
-    XMapWindow(_display, _window);
-
-    // Make current and init glew
-    pen_make_gl_context_current();
-
-    glewExperimental = true;
-    GLenum err = glewInit();
-    if (err != GLEW_OK)
-    {
-        PEN_LOG("Error: glewInit failed: %s\n", glewGetErrorString(err));
-        return 1;
-    }
-
+int main(int argc, char* argv[])
+{
     // initilaise any generic systems
     users();
-    pen::timer_system_intialise();
-    pen::input_gamepad_init();
+    timer_system_intialise();
+    input_gamepad_init();
 
-    // inits renderer and loops in wait for jobs, calling os update
-    renderer_init(nullptr, true);
+    pen::pen_creation_params pc = pen::pen_entry(argc, argv);
+    pen_window.width = pc.window_width;
+    pen_window.height = pc.window_height;
+    pen_window.window_title = pc.window_title;
+    pen_window.sample_count = pc.window_sample_count;
 
-    // exit, kill other threads and wait
-    pen::jobs_terminate_all();
-
-    XDestroyWindow(_display, _window);
-    XCloseDisplay(_display);
-
-    return s_error_code;
+    if (pc.flags & e_pen_create_flags::renderer)
+    {
+        pen_run_windowed();
+    }
+    else
+    {
+        pen_run_console_app();
+    }
 }
 
 namespace pen
@@ -218,16 +289,6 @@ namespace pen
 
     u32 translate_key_sym(u32 k)
     {
-        // numerical keys
-        if (k >= XK_0 && k <= XK_9)
-            return PK_0 + (k - XK_0);
-
-        if (k >= XK_a && k <= XK_z)
-            return PK_A + (k - XK_a);
-
-        if (k >= XK_A && k <= XK_Z)
-            return PK_A + (k - XK_A);
-
         switch (k)
         {
             // Misc
@@ -238,7 +299,7 @@ namespace pen
             case XK_Tab:
                 return PK_TAB;
             case XK_Linefeed:
-                return 0; //?
+                break; //?
             case XK_Clear:
                 return PK_CLEAR;
             case XK_Return:
@@ -248,7 +309,7 @@ namespace pen
             case XK_Scroll_Lock:
                 return PK_SCROLL;
             case XK_Sys_Req:
-                return 0; //?
+                break; //?
             case XK_Escape:
                 return PK_ESCAPE;
             case XK_Delete:
@@ -262,11 +323,42 @@ namespace pen
             case XK_Right:
                 return PK_RIGHT;
             case XK_Down:
+            ERROR:
                 return PK_DOWN;
             case XK_Prior:
                 return PK_PRIOR;
             case XK_Next:
                 return PK_NEXT;
+            case XK_Num_Lock:
+                return PK_NUMLOCK;
+            case XK_semicolon:
+                return PK_SEMICOLON;
+            case XK_comma:
+                return PK_COMMA;
+            case XK_period:
+                return PK_PERIOD;
+            case XK_dead_tilde:
+                return PK_TILDE;
+            case XK_equal:
+                return PK_EQUAL;
+            case XK_minus:
+                return PK_MINUS;
+            case XK_backslash:
+                return PK_BACK_SLASH;
+            case XK_bracketleft:
+                return PK_OPEN_BRACKET;
+            case XK_bracketright:
+                return PK_CLOSE_BRACKET;
+            case XK_grave:
+                return PK_GRAVE;
+            case XK_apostrophe:
+                return PK_APOSTRAPHE;
+            case 47:
+                return PK_FORWARD_SLASH;
+            case XK_Insert:
+                return PK_INSERT;
+            case 65367:
+                return PK_END;
 
             // F
             case XK_F1:
@@ -327,7 +419,17 @@ namespace pen
                 return PK_DIVIDE;
         };
 
-        return 0;
+        // numerical keys
+        if (k >= XK_0 && k <= XK_9)
+            return PK_0 + (k - XK_0);
+
+        if (k >= XK_a && k <= XK_z)
+            return PK_A + (k - XK_a);
+
+        if (k >= XK_A && k <= XK_Z)
+            return PK_A + (k - XK_A);
+
+        return k;
     }
 
     static bool pen_terminate_app = false;
@@ -338,7 +440,6 @@ namespace pen
         {
             // audio, user thread etc
             pen::default_thread_info thread_info;
-            thread_info.flags = pen::PEN_CREATE_AUDIO_THREAD;
             pen::jobs_create_default(thread_info);
             init_jobs = true;
         }
@@ -370,12 +471,12 @@ namespace pen
                 {
                     static c8 buf[255];
                     KeySym    k;
+                    Status    status;
 
                     // todo for utf8
-                    // Xutf8LookupString(xic, &event.xkey, buf, sizeof(buf) - 1, &keysym, &status);
-
-                    XLookupString(&event.xkey, buf, 255, &k, 0);
-                    pen::input_set_unicode_key_down(buf[0]);
+                    Xutf8LookupString(_xic, &event.xkey, buf, sizeof(buf) - 1, &k, &status);
+                    //XLookupString(&event.xkey, buf, 255, &k, 0);
+                    pen::input_add_unicode_input(buf);
 
                     u32 ks = translate_key_sym(k);
                     pen::input_set_key_down(ks);
@@ -462,6 +563,22 @@ namespace pen
         height = pen_window.height;
     }
 
+    const c8* window_get_title()
+    {
+        return pen_window.window_title;
+    }
+
+    hash_id window_get_id()
+    {
+        static hash_id window_id = PEN_HASH(pen_window.window_title);
+        return window_id;
+    }
+
+    f32 window_get_aspect()
+    {
+        return (f32)pen_window.width / (f32)pen_window.height;
+    }
+
     void window_get_frame(window_frame& f)
     {
         f = _window_frame;
@@ -489,5 +606,10 @@ namespace pen
     bool input_redo_pressed()
     {
         return pen::input_key(PK_CONTROL) && pen::input_get_unicode_key('Y');
+    }
+
+    const user_info& os_get_user_info()
+    {
+        return pen_user_info;
     }
 } // namespace pen

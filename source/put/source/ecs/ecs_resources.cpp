@@ -2,24 +2,37 @@
 // Copyright 2014 - 2019 Alex Dixon.
 // License: https://github.com/polymonster/pmtech/blob/master/license.md
 
+#include "ecs/ecs_resources.h"
+#include "ecs/ecs_utilities.h"
+
 #include "debug_render.h"
 #include "dev_ui.h"
+
+#include "console.h"
+#include "data_struct.h"
 #include "file_system.h"
 #include "hash.h"
 #include "pen_string.h"
 #include "str_utilities.h"
 
-#include "ecs/ecs_resources.h"
-#include "ecs/ecs_utilities.h"
+#include "meshoptimizer.h"
 
-#include "console.h"
-#include "data_struct.h"
+#include <fstream>
 
 using namespace put;
 using namespace ecs;
 
 namespace
 {
+    // id hashes
+    const hash_id ID_CONTROL_RIG = PEN_HASH("controlrig");
+    const hash_id ID_JOINT = PEN_HASH("joint");
+    const hash_id ID_TRAJECTORY = PEN_HASH("trajectoryshjnt");
+
+    // constants
+    static const u32 k_matrix_floats = 16;
+    static const u32 k_extent_floats = 3;
+
     namespace e_pmm_transform
     {
         enum pmm_transform_t
@@ -31,15 +44,656 @@ namespace
         };
     }
     typedef e_pmm_transform::pmm_transform_t pmm_transform;
-    
-    // id hashes
-    const hash_id ID_CONTROL_RIG = PEN_HASH("controlrig");
-    const hash_id ID_JOINT = PEN_HASH("joint");
-    const hash_id ID_TRAJECTORY = PEN_HASH("trajectoryshjnt");
-    
-    static std::vector<geometry_resource*> s_geometry_resources;
-    static std::vector<material_resource*> s_material_resources;
-}
+
+    struct pmm_contents
+    {
+        u32              num_scene = 0;
+        u32              num_geometry = 0;
+        u32              num_materials = 0;
+        u8*              data_start = nullptr;
+        void*            file_data = nullptr;
+        u32              file_size = 0;
+        std::vector<u32> scene_offsets;
+        std::vector<u32> material_offsets;
+        std::vector<Str> material_names;
+        std::vector<u32> geometry_offsets;
+        std::vector<Str> geometry_names;
+    };
+
+    struct pmm_submesh
+    {
+        // pmm submesh header
+        vec3f min_extents;
+        vec3f max_extents;
+        u32   num_verts;
+        u32   index_size;
+        u32   num_pos_floats;
+        u32   num_vertex_floats;
+        u32   num_indices;
+        u32   num_collision_floats;
+        u32   skinned;
+        u32   num_joint_floats;
+        mat4  bind_shape_matrix;
+        // end of header
+        u32    vertex_size;
+        void*  joint_data;
+        size_t joint_data_size;
+        void*  position_data;
+        size_t position_data_size;
+        void*  vertex_data;
+        size_t vertex_data_size;
+        void*  index_data;
+        size_t index_data_size;
+        void*  collision_data;
+        size_t collision_data_size;
+    };
+
+    struct pmm_geometry
+    {
+        u32                      version;
+        u32                      num_meshes;
+        std::vector<Str>         mat_names;
+        std::vector<pmm_submesh> submeshes;
+    };
+
+    struct volume_instance
+    {
+        hash_id id;
+        hash_id id_technique;
+        hash_id id_sampler_state;
+        u32     cmp_flags;
+    };
+
+    std::vector<geometry_resource*> s_geometry_resources;
+    std::vector<material_resource*> s_material_resources;
+    std::vector<animation_resource> s_animation_resources;
+
+    bool parse_pmm_contents(const c8* filename, pmm_contents& contents)
+    {
+        // read in file from disk
+        pen_error err = pen::filesystem_read_file_to_buffer(filename, &contents.file_data, contents.file_size);
+        if (err != PEN_ERR_OK || contents.file_size == 0)
+        {
+            dev_ui::log_level(dev_ui::console_level::error, "[error] load pmm - failed to find file: %s", filename);
+            return false;
+        }
+
+        // start reading file
+        const u32* p_u32reader = (u32*)contents.file_data;
+
+        // small header.. containing the number of each sub resource
+        contents.num_scene = *p_u32reader++;
+        contents.num_materials = *p_u32reader++;
+        contents.num_geometry = *p_u32reader++;
+
+        // parse scenes offsets
+        for (s32 i = 0; i < contents.num_scene; ++i)
+            contents.scene_offsets.push_back(*p_u32reader++);
+
+        // parse material offsets and names
+        for (s32 i = 0; i < contents.num_materials; ++i)
+        {
+            Str name = read_parsable_string(&p_u32reader);
+            contents.material_offsets.push_back(*p_u32reader++);
+            contents.material_names.push_back(name);
+        }
+
+        // parse geometry offsets and names
+        for (s32 i = 0; i < contents.num_geometry; ++i)
+        {
+            Str name = read_parsable_string(&p_u32reader);
+            contents.geometry_offsets.push_back(*p_u32reader++);
+            contents.geometry_names.push_back(name);
+        }
+
+        // start of sub resource data
+        contents.data_start = (u8*)p_u32reader;
+        return true;
+    }
+
+    bool parse_pmm_geometry(pmm_contents& contents, std::vector<pmm_geometry>& geom)
+    {
+        // load geometry resources
+        for (u32 g = 0; g < contents.num_geometry; ++g)
+        {
+            pmm_geometry og;
+
+            // read small header
+            u32* p_reader = (u32*)(contents.data_start + contents.geometry_offsets[g]);
+
+            og.version = *p_reader++;
+            og.num_meshes = *p_reader++;
+
+            if (og.version < 1)
+                return false;
+
+            // parse material names, for submeshes
+            for (u32 submesh = 0; submesh < og.num_meshes; ++submesh)
+                og.mat_names.push_back(read_parsable_string((const u32**)&p_reader));
+
+            // parse submeshes
+            for (u32 s = 0; s < og.num_meshes; ++s)
+            {
+                // extents
+                pmm_submesh sm = {0};
+                memcpy(&sm.min_extents, p_reader, sizeof(vec3f));
+                p_reader += k_extent_floats;
+
+                memcpy(&sm.max_extents, p_reader, sizeof(vec3f));
+                p_reader += k_extent_floats;
+
+                // parse vertex and index data
+                sm.num_verts = *p_reader++;
+                sm.index_size = *p_reader++;
+                sm.num_pos_floats = *p_reader++;
+                sm.num_vertex_floats = *p_reader++;
+                sm.num_indices = *p_reader++;
+                sm.num_collision_floats = *p_reader++;
+                sm.skinned = *p_reader++;
+                sm.num_joint_floats = *p_reader++;
+                memcpy(&sm.bind_shape_matrix, p_reader, sizeof(mat4));
+                p_reader += k_matrix_floats;
+
+                sm.vertex_size = sizeof(vertex_model);
+                if (sm.skinned)
+                {
+                    sm.vertex_size = sizeof(vertex_model_skinned);
+                    sm.joint_data_size = sizeof(f32) * sm.num_joint_floats;
+                    sm.joint_data = pen::memory_alloc(sm.joint_data_size);
+                    memcpy(sm.joint_data, p_reader, sm.joint_data_size);
+                    p_reader += sm.num_joint_floats;
+                }
+
+                // first is position only buffer
+                // .. currently not optimised
+                sm.position_data_size = sm.num_pos_floats * sizeof(f32);
+                sm.position_data = pen::memory_alloc(sm.position_data_size);
+                memcpy(sm.position_data, p_reader, sm.position_data_size);
+                p_reader += sm.position_data_size / sizeof(f32);
+
+                // second is model vertex buffer (skinned or unskinned)
+                sm.vertex_data_size = sm.vertex_size * sm.num_verts;
+                sm.vertex_data = pen::memory_alloc(sm.vertex_data_size);
+                memcpy(sm.vertex_data, p_reader, sm.vertex_data_size);
+                p_reader += sm.vertex_data_size / sizeof(f32);
+
+                // index data
+                sm.index_data_size = sm.num_indices * sm.index_size;
+                sm.index_data = pen::memory_alloc(sm.index_data_size);
+                memcpy(sm.index_data, p_reader, sm.index_data_size);
+                p_reader = (u32*)((c8*)p_reader + sm.index_data_size);
+
+                // collsion float data
+                sm.collision_data_size = sm.num_collision_floats * sizeof(f32);
+                sm.collision_data = pen::memory_alloc(sm.collision_data_size);
+                memcpy(sm.collision_data, p_reader, sm.collision_data_size);
+                p_reader += sm.num_collision_floats;
+
+                og.submeshes.push_back(sm);
+            }
+
+            geom.push_back(og);
+        }
+
+        return true;
+    }
+
+    void load_pmm_geometry(const c8* filename, pmm_contents& contents)
+    {
+        std::vector<pmm_geometry> geom;
+        parse_pmm_geometry(contents, geom);
+
+        for (u32 g = 0; g < contents.num_geometry; ++g)
+        {
+            // generate hash
+            pmm_geometry& gg = geom[g];
+
+            const c8*        gname = contents.geometry_names[g].c_str();
+            pen::hash_murmur hm;
+            hm.begin(0);
+            hm.add(filename, pen::string_length(filename));
+            hm.add(gname, pen::string_length(gname));
+            hash_id geom_hash = hm.end();
+
+            // check for existing
+            for (s32 g = 0; g < s_geometry_resources.size(); ++g)
+                if (geom_hash == s_geometry_resources[g]->geom_hash)
+                    return;
+
+            for (u32 submesh = 0; submesh < geom[g].submeshes.size(); ++submesh)
+            {
+                pmm_submesh& sm = gg.submeshes[submesh];
+
+                hm.begin(0);
+                hm.add(filename, pen::string_length(filename));
+                hm.add(gname, pen::string_length(gname));
+                hm.add(submesh);
+                hash_id sub_hash = hm.end();
+
+                geometry_resource* p_geometry = new geometry_resource;
+
+                // assign info
+                p_geometry->p_skin = nullptr;
+                p_geometry->file_hash = PEN_HASH(filename);
+                p_geometry->geom_hash = geom_hash;
+                p_geometry->hash = sub_hash;
+                p_geometry->geometry_name = gname;
+                p_geometry->filename = filename;
+                p_geometry->material_name = gg.mat_names[submesh];
+                p_geometry->material_id_name = PEN_HASH(gg.mat_names[submesh].c_str());
+                p_geometry->submesh_index = submesh;
+                p_geometry->min_extents = sm.min_extents;
+                p_geometry->max_extents = sm.max_extents;
+                p_geometry->num_vertices = sm.num_verts;
+                p_geometry->num_indices = sm.num_indices;
+                p_geometry->vertex_size = sm.vertex_size;
+                p_geometry->index_type = sm.index_size == 2 ? PEN_FORMAT_R16_UINT : PEN_FORMAT_R32_UINT;
+
+                // assign skinning
+                if (sm.skinned)
+                {
+                    p_geometry->p_skin = (cmp_skin*)pen::memory_alloc(sizeof(cmp_skin));
+                    p_geometry->p_skin->bone_cbuffer = PEN_INVALID_HANDLE;
+                    p_geometry->p_skin->bind_shape_matrix = sm.bind_shape_matrix;
+                    p_geometry->p_skin->num_joints = sm.num_joint_floats / k_matrix_floats;
+                    memset(p_geometry->p_skin->joint_bind_matrices, 0x0, sizeof(p_geometry->p_skin->joint_bind_matrices));
+                    memcpy(p_geometry->p_skin->joint_bind_matrices, sm.joint_data, sm.joint_data_size);
+                }
+
+                // assign cpu data copies
+                p_geometry->cpu_position_buffer = sm.position_data;
+                p_geometry->cpu_vertex_buffer = sm.vertex_data;
+                p_geometry->cpu_index_buffer = sm.index_data;
+                // sm.collision_data if u want
+
+                // gpu position buffer
+                pen::buffer_creation_params bcp;
+                bcp.usage_flags = PEN_USAGE_DEFAULT;
+                bcp.bind_flags = PEN_BIND_VERTEX_BUFFER;
+                bcp.cpu_access_flags = 0;
+                bcp.buffer_size = sm.position_data_size;
+                bcp.data = p_geometry->cpu_position_buffer;
+                p_geometry->position_buffer = pen::renderer_create_buffer(bcp);
+
+                // gpu vertex buffer
+                bcp.usage_flags = PEN_USAGE_DEFAULT;
+                bcp.bind_flags = PEN_BIND_VERTEX_BUFFER;
+                bcp.cpu_access_flags = 0;
+                bcp.buffer_size = sm.vertex_data_size;
+                bcp.data = p_geometry->cpu_vertex_buffer;
+                p_geometry->vertex_buffer = pen::renderer_create_buffer(bcp);
+
+                // gpu index buffer
+                bcp.usage_flags = PEN_USAGE_DEFAULT;
+                bcp.bind_flags = PEN_BIND_INDEX_BUFFER;
+                bcp.cpu_access_flags = 0;
+                bcp.buffer_size = sm.index_data_size;
+                bcp.data = p_geometry->cpu_index_buffer;
+                p_geometry->index_buffer = pen::renderer_create_buffer(bcp);
+
+                s_geometry_resources.push_back(p_geometry);
+            }
+        }
+    }
+
+    void load_material_resource(const c8* filename, const c8* material_name, const void* data)
+    {
+        pen::hash_murmur hm;
+        hm.begin();
+        hm.add(filename, pen::string_length(filename));
+        hm.add(material_name, pen::string_length(material_name));
+        hash_id hash = hm.end();
+
+        for (s32 m = 0; m < s_material_resources.size(); ++m)
+            if (s_material_resources[m]->hash == hash)
+                return;
+
+        const u32* p_reader = (u32*)data;
+
+        u32 version = *p_reader++;
+
+        if (version < 1)
+            return;
+
+        material_resource* p_mat = new material_resource;
+
+        p_mat->material_name = material_name;
+        p_mat->hash = hash;
+
+        // diffuse
+        memcpy(&p_mat->data[0], p_reader, sizeof(vec4f));
+        p_reader += 4;
+
+        // specular
+        memcpy(&p_mat->data[4], p_reader, sizeof(vec4f));
+        p_reader += 4;
+
+        // shininess
+        memcpy(&p_mat->data[3], p_reader, sizeof(f32));
+        p_reader++;
+
+        // reflectivity
+        memcpy(&p_mat->data[7], p_reader, sizeof(f32));
+        p_reader++;
+
+        u32 num_maps = *p_reader++;
+
+        // clear all maps to invalid
+        static const u32 default_maps[] = {
+            put::load_texture("data/textures/defaults/albedo.dds"), put::load_texture("data/textures/defaults/normal.dds"),
+            put::load_texture("data/textures/defaults/spec.dds"),   put::load_texture("data/textures/defaults/spec.dds"),
+            put::load_texture("data/textures/defaults/black.dds"),  put::load_texture("data/textures/defaults/black.dds")};
+        static_assert(e_texture::COUNT == PEN_ARRAY_SIZE(default_maps), "mismatched defaults size");
+
+        for (u32 map = 0; map < e_texture::COUNT; ++map)
+            p_mat->texture_handles[map] = default_maps[map];
+
+        for (u32 map = 0; map < num_maps; ++map)
+        {
+            u32 map_type = *p_reader++;
+            Str texture_name = read_parsable_string(&p_reader);
+            p_mat->texture_handles[map_type] = put::load_texture(texture_name.c_str());
+        }
+
+        s_material_resources.push_back(p_mat);
+
+        return;
+    }
+
+    s32 load_nodes_resource(const c8* filename, ecs_scene* scene, const void* data)
+    {
+        const u32* p_u32reader = (const u32*)data;
+        u32        version = *p_u32reader++;
+        u32        num_import_nodes = *p_u32reader++;
+        if (version < 1)
+            return PEN_INVALID_HANDLE;
+
+        // scene nodes
+        bool has_control_rig = false;
+        s32  nodes_start, nodes_end;
+        get_new_entities_append(scene, num_import_nodes, nodes_start, nodes_end);
+
+        u32 node_zero_offset = nodes_start;
+        u32 current_node = node_zero_offset;
+        u32 inserted_nodes = 0;
+
+        // load scene nodes
+        for (u32 n = 0; n < num_import_nodes; ++n)
+        {
+            p_u32reader++; // e_node type
+
+            Str node_name = read_parsable_string(&p_u32reader);
+            Str geometry_name = read_parsable_string(&p_u32reader);
+
+            scene->id_name[current_node] = PEN_HASH(node_name.c_str());
+            scene->id_geometry[current_node] = PEN_HASH(geometry_name.c_str());
+
+            scene->names[current_node] = node_name;
+            scene->geometry_names[current_node] = geometry_name;
+
+            scene->entities[current_node] |= e_cmp::allocated;
+
+            if (scene->id_geometry[current_node] == ID_JOINT)
+                scene->entities[current_node] |= e_cmp::bone;
+
+            if (scene->id_name[current_node] == ID_TRAJECTORY)
+                scene->entities[current_node] |= e_cmp::anim_trajectory;
+
+            u32 num_meshes = *p_u32reader++;
+
+            struct mat_symbol_name
+            {
+                hash_id symbol;
+                Str     name;
+            };
+            std::vector<mat_symbol_name> mesh_material_names;
+
+            // material pre load
+            for (u32 mat = 0; mat < num_meshes; ++mat)
+            {
+                Str name = read_parsable_string(&p_u32reader);
+                Str symbol = read_parsable_string(&p_u32reader);
+
+                mesh_material_names.push_back({PEN_HASH(symbol.c_str()), name});
+            }
+
+            // transformation load
+            u32 parent = *p_u32reader++ + node_zero_offset + inserted_nodes;
+            scene->parents[current_node] = parent;
+            u32 transforms = *p_u32reader++;
+
+            // parent fix up to contain control rig
+            if (scene->id_name[current_node] == ID_CONTROL_RIG)
+            {
+                has_control_rig = true;
+                scene->parents[current_node] = node_zero_offset;
+            }
+
+            // if we find a trajectory node with no control rig.. we can use that to identify a rig
+            if (!has_control_rig)
+                if (scene->id_name[current_node] == ID_TRAJECTORY)
+                    scene->parents[current_node] = node_zero_offset;
+
+            vec3f translation;
+            vec4f rotations[3];
+            mat4  matrix;
+            bool  has_matrix_transform = false;
+            u32   num_rotations = 0;
+
+            static f32 zero_rotation_epsilon = 0.000001f;
+            for (u32 t = 0; t < transforms; ++t)
+            {
+                u32 type = *p_u32reader++;
+
+                switch (type)
+                {
+                    case e_pmm_transform::translate:
+                        memcpy(&translation, p_u32reader, 12);
+                        p_u32reader += 3;
+                        break;
+                    case e_pmm_transform::rotate:
+                        memcpy(&rotations[num_rotations], p_u32reader, 16);
+                        rotations[num_rotations].w = maths::deg_to_rad(rotations[num_rotations].w);
+                        if (rotations[num_rotations].w < zero_rotation_epsilon &&
+                            rotations[num_rotations].w > zero_rotation_epsilon)
+                            rotations[num_rotations].w = 0.0f;
+                        num_rotations++;
+                        p_u32reader += 4;
+                        break;
+                    case e_pmm_transform::matrix:
+                        has_matrix_transform = true;
+                        memcpy(&matrix, p_u32reader, 16 * 4);
+                        p_u32reader += 16;
+                        break;
+                    case e_pmm_transform::identity:
+                        has_matrix_transform = true;
+                        matrix = mat4::create_identity();
+                        break;
+                    default:
+                        // unsupported transform type
+                        PEN_ASSERT(0);
+                        break;
+                }
+            }
+
+            quat final_rotation;
+            if (num_rotations == 0)
+            {
+                // no rotation
+                final_rotation.euler_angles(0.0f, 0.0f, 0.0f);
+            }
+            else if (num_rotations == 1)
+            {
+                // axis angle
+                final_rotation.axis_angle(rotations[0]);
+            }
+            else if (num_rotations == 3)
+            {
+                // euler angles
+                f32 z_theta = 0;
+                f32 y_theta = 0;
+                f32 x_theta = 0;
+
+                for (u32 r = 0; r < 3; ++r)
+                {
+                    if (rotations[r].z == 1.0f)
+                    {
+                        z_theta = rotations[r].w;
+                    }
+                    else if (rotations[r].y == 1.0f)
+                    {
+                        y_theta = rotations[r].w;
+                    }
+                    else if (rotations[r].x == 1.0f)
+                    {
+                        x_theta = rotations[r].w;
+                    }
+
+                    final_rotation.euler_angles(z_theta, y_theta, x_theta);
+                }
+            }
+
+            if (!has_matrix_transform)
+            {
+                // create matrix from transform
+                scene->transforms[current_node].translation = translation;
+                scene->transforms[current_node].rotation = final_rotation;
+                scene->transforms[current_node].scale = vec3f::one();
+
+                // make a transform matrix for geometry
+                mat4 rot_mat;
+                final_rotation.get_matrix(rot_mat);
+
+                mat4 translation_mat = mat::create_translation(translation);
+
+                matrix = translation_mat * rot_mat;
+            }
+            else
+            {
+                // decompose matrix into transform
+                scene->transforms[current_node].translation = matrix.get_translation();
+                scene->transforms[current_node].rotation.from_matrix(matrix);
+
+                f32 sx = mag(matrix.get_row(0).xyz);
+                f32 sy = mag(matrix.get_row(1).xyz);
+                f32 sz = mag(matrix.get_row(2).xyz);
+
+                scene->transforms[current_node].scale = vec3f(sx, sy, sz);
+            }
+
+            scene->initial_transform[current_node].rotation = scene->transforms[current_node].rotation;
+            scene->initial_transform[current_node].translation = scene->transforms[current_node].translation;
+            scene->initial_transform[current_node].scale = scene->transforms[current_node].scale;
+
+            scene->local_matrices[current_node] = (matrix);
+
+            // store intial position for physics to hook into later
+            scene->physics_data[current_node].rigid_body.position = translation;
+            scene->physics_data[current_node].rigid_body.rotation = final_rotation;
+
+            // assign geometry, materials and physics
+            u32 dest = current_node;
+            if (num_meshes > 0)
+            {
+                for (u32 submesh = 0; submesh < num_meshes; ++submesh)
+                {
+                    dest = current_node + submesh;
+
+                    Str node_suffix;
+                    node_suffix.appendf("_%i", submesh);
+
+                    if (submesh > 0)
+                    {
+                        inserted_nodes++;
+                        clone_entity(scene, current_node, dest, current_node, e_clone_mode::instantiate, vec3f::zero(),
+                                     (const c8*)node_suffix.c_str());
+                        scene->local_matrices[dest] = mat4::create_identity();
+
+                        // child geometry which will inherit any skinning from its parent
+                        scene->entities[dest] |= e_cmp::sub_geometry;
+                    }
+
+                    // generate geometry hash
+                    pen::hash_murmur hm;
+                    hm.begin(0);
+                    hm.add(filename, pen::string_length(filename));
+                    hm.add(geometry_name.c_str(), geometry_name.length());
+                    hm.add(submesh);
+                    hash_id geom_hash = hm.end();
+
+                    scene->id_geometry[dest] = geom_hash;
+
+                    geometry_resource* gr = get_geometry_resource(geom_hash);
+
+                    if (gr)
+                    {
+                        instantiate_geometry(gr, scene, dest);
+
+                        instantiate_model_cbuffer(scene, dest);
+
+                        // find mat name from symbol
+                        Str mat_name = "";
+                        for (auto& ms : mesh_material_names)
+                            if (ms.symbol == gr->material_id_name)
+                                mat_name = ms.name;
+
+                        hm.begin();
+                        hm.add(filename, pen::string_length(filename));
+                        hm.add(mat_name.c_str(), mat_name.length());
+                        hash_id material_hash = hm.end();
+
+                        material_resource* mr = get_material_resource(material_hash);
+
+                        if (mr)
+                        {
+                            scene->material_names[dest] = mat_name;
+
+                            // due to cloning, clear these flags
+                            scene->state_flags[dest] &= ~e_state::material_initialised;
+                            scene->state_flags[dest] &= ~e_state::samplers_initialised;
+
+                            instantiate_material(mr, scene, dest);
+
+                            scene->id_material[dest] = material_hash;
+                        }
+                        else
+                        {
+                            static hash_id id_default = PEN_HASH("default_material");
+
+                            mr = get_material_resource(id_default);
+
+                            scene->material_names[dest] = "default_material";
+
+                            instantiate_material(mr, scene, dest);
+
+                            scene->id_material[dest] = id_default;
+                        }
+                    }
+                    else
+                    {
+                        put::dev_ui::log_level(dev_ui::console_level::error, "[error] geometry - missing file : %s",
+                                               geometry_name.c_str());
+                    }
+                }
+            }
+
+            current_node = dest + 1;
+        }
+
+        // now we have loaded the whole scene fix up any anim controllers
+        for (s32 i = node_zero_offset; i < node_zero_offset + num_import_nodes; ++i)
+        {
+            if (scene->entities[i] & e_cmp::sub_geometry)
+                continue;
+
+            // parent geometry deals with skinning
+            if ((scene->entities[i] & e_cmp::geometry) && scene->geometries[i].p_skin)
+                instantiate_anim_controller_v2(scene, i);
+        }
+
+        return nodes_start;
+    }
+} // namespace
 
 namespace put
 {
@@ -74,6 +728,23 @@ namespace put
             return nullptr;
         }
 
+        animation_resource* get_animation_resource(anim_handle h)
+        {
+            if (h >= s_animation_resources.size())
+                return nullptr;
+
+            return &s_animation_resources[h];
+        }
+
+        material_resource* get_material_resource(hash_id hash)
+        {
+            for (auto* m : s_material_resources)
+                if (m->hash == hash)
+                    return m;
+
+            return nullptr;
+        }
+
         void instantiate_constraint(ecs_scene* scene, u32 node_index)
         {
             physics::constraint_params& cp = scene->physics_data[node_index].constraint;
@@ -83,9 +754,9 @@ namespace put
             cp.pivot = scene->transforms[node_index].translation - scene->physics_data[rb].rigid_body.position;
 
             scene->physics_handles[node_index] = physics::add_constraint(cp);
-            scene->physics_data[node_index].type = PHYSICS_TYPE_CONSTRAINT;
+            scene->physics_data[node_index].type = e_physics_type::constraint;
 
-            scene->entities[node_index] |= CMP_CONSTRAINT;
+            scene->entities[node_index] |= e_cmp::constraint;
         }
 
         void bake_rigid_body_params(ecs_scene* scene, u32 node_index)
@@ -154,8 +825,8 @@ namespace put
                 scene->physics_handles[s] = physics::add_rb(rb);
             }
 
-            scene->physics_data[node_index].type = PHYSICS_TYPE_RIGID_BODY;
-            scene->entities[s] |= CMP_PHYSICS;
+            scene->physics_data[node_index].type = e_physics_type::rigid_body;
+            scene->entities[s] |= e_cmp::physics;
         }
 
         using physics::rigid_body_params;
@@ -182,8 +853,8 @@ namespace put
 
             u32* child_handles = nullptr;
             scene->physics_handles[parent] = physics::add_compound_rb(cbpr, &child_handles);
-            scene->physics_data[parent].type = PHYSICS_TYPE_RIGID_BODY;
-            scene->entities[parent] |= CMP_PHYSICS;
+            scene->physics_data[parent].type = e_physics_type::rigid_body;
+            scene->entities[parent] |= e_cmp::physics;
 
             // fixup children
             PEN_ASSERT(sb_count(child_handles) == num_children);
@@ -191,17 +862,17 @@ namespace put
             {
                 u32 ci = children[i];
                 scene->physics_handles[ci] = child_handles[i];
-                scene->physics_data[ci].type = PHYSICS_TYPE_COMPOUND_CHILD;
-                scene->entities[ci] |= CMP_PHYSICS;
+                scene->physics_data[ci].type = e_physics_type::compound_child;
+                scene->entities[ci] |= e_cmp::physics;
             }
         }
 
         void destroy_physics(ecs_scene* scene, s32 node_index)
         {
-            if (!(scene->entities[node_index] & CMP_PHYSICS))
+            if (!(scene->entities[node_index] & e_cmp::physics))
                 return;
 
-            scene->entities[node_index] &= ~CMP_PHYSICS;
+            scene->entities[node_index] &= ~e_cmp::physics;
 
             physics::release_entity(scene->physics_handles[node_index]);
             scene->physics_handles[node_index] = PEN_INVALID_HANDLE;
@@ -228,24 +899,24 @@ namespace put
 
             scene->geometry_names[node_index] = gr->geometry_name;
             scene->id_geometry[node_index] = gr->hash;
-            scene->entities[node_index] |= CMP_GEOMETRY;
+            scene->entities[node_index] |= e_cmp::geometry;
 
             if (gr->p_skin)
-                scene->entities[node_index] |= CMP_SKINNED;
+                scene->entities[node_index] |= e_cmp::skinned;
 
             instance->vertex_shader_class = ID_VERTEX_CLASS_BASIC;
 
-            if (scene->entities[node_index] & CMP_SKINNED)
+            if (scene->entities[node_index] & e_cmp::skinned)
                 instance->vertex_shader_class = ID_VERTEX_CLASS_SKINNED;
         }
 
         void destroy_geometry(ecs_scene* scene, u32 node_index)
         {
-            if (!(scene->entities[node_index] & CMP_GEOMETRY))
+            if (!(scene->entities[node_index] & e_cmp::geometry))
                 return;
 
-            scene->entities[node_index] &= ~CMP_GEOMETRY;
-            scene->entities[node_index] &= ~CMP_MATERIAL;
+            scene->entities[node_index] &= ~e_cmp::geometry;
+            scene->entities[node_index] &= ~e_cmp::material;
 
             // zero cmp geom
             pen::memory_zero(&scene->geometries[node_index], sizeof(cmp_geometry));
@@ -332,44 +1003,10 @@ namespace put
             geom.vertex_size = sizeof(vertex_model);
 
             // set pre-skinned and unset skinned
-            scene->entities[node_index] |= CMP_PRE_SKINNED;
-            scene->entities[node_index] &= ~CMP_SKINNED;
+            scene->entities[node_index] |= e_cmp::pre_skinned;
+            scene->entities[node_index] &= ~e_cmp::skinned;
 
             geom.vertex_shader_class = ID_VERTEX_CLASS_BASIC;
-        }
-
-        void instantiate_anim_controller(ecs_scene* scene, s32 node_index)
-        {
-            cmp_geometry* geom = &scene->geometries[node_index];
-
-            if (geom->p_skin)
-            {
-                cmp_anim_controller& controller = scene->anim_controller[node_index];
-
-                std::vector<s32> joint_indices;
-                build_heirarchy_node_list(scene, node_index, joint_indices);
-
-                for (s32 jj = 0; jj < joint_indices.size(); ++jj)
-                {
-                    s32 jnode = joint_indices[jj];
-
-                    if (jnode > -1 && scene->entities[jnode] & CMP_BONE)
-                    {
-                        controller.joints_offset = jnode;
-                        break;
-                    }
-
-                    // parent stray nodes to the top level anim / geom node
-                    if (jnode > -1)
-                        if (scene->parents[jnode] == jnode)
-                            scene->parents[jnode] = node_index;
-                }
-
-                controller.current_time = 0.0f;
-                controller.current_frame = 0;
-
-                scene->entities[node_index] |= CMP_ANIM_CONTROLLER;
-            }
         }
 
         void instantiate_anim_controller_v2(ecs_scene* scene, s32 node_index)
@@ -383,17 +1020,21 @@ namespace put
                 std::vector<s32> joint_indices;
                 build_heirarchy_node_list(scene, node_index, joint_indices);
 
+                controller.joints_offset = -1;
                 for (s32 jj = 0; jj < joint_indices.size(); ++jj)
                 {
                     s32 jnode = joint_indices[jj];
 
-                    if (jnode > -1 && scene->entities[jnode] & CMP_BONE)
+                    if (jnode > -1 && scene->entities[jnode] & e_cmp::bone)
                     {
+                        if (controller.joints_offset == -1)
+                            controller.joints_offset = jnode;
+
                         sb_push(controller.joint_indices, jnode);
                     }
                 }
 
-                scene->entities[node_index] |= CMP_ANIM_CONTROLLER;
+                scene->entities[node_index] |= e_cmp::anim_controller;
             }
         }
 
@@ -420,7 +1061,7 @@ namespace put
             scene->transforms[node_index].scale = scale;
             scene->shadows[node_index].texture_handle = volume_texture;
             scene->shadows[node_index].sampler_state = pmfx::get_render_state(id_cl, pmfx::e_render_state::sampler);
-            scene->entities[node_index] |= CMP_SDF_SHADOW;
+            scene->entities[node_index] |= e_cmp::sdf_shadow;
         }
 
         void instantiate_light(ecs_scene* scene, u32 node_index)
@@ -429,7 +1070,7 @@ namespace put
                 return;
 
             // cbuffer for draw call, light volume for editor / deferred etc
-            scene->entities[node_index] |= CMP_LIGHT;
+            scene->entities[node_index] |= e_cmp::light;
             instantiate_model_cbuffer(scene, node_index);
 
             scene->bounding_volumes[node_index].min_extents = -vec3f::one();
@@ -438,7 +1079,7 @@ namespace put
             scene->world_matrices[node_index] = mat4::create_identity();
             f32 rad = std::max<f32>(scene->lights[node_index].radius, 1.0f);
             scene->transforms[node_index].scale = vec3f(rad, rad, rad);
-            scene->entities[node_index] |= CMP_TRANSFORM;
+            scene->entities[node_index] |= e_cmp::transform;
 
             // basic defaults
             cmp_light& snl = scene->lights[node_index];
@@ -468,8 +1109,8 @@ namespace put
             instantiate_material(&area_light_material, scene, node_index);
             instantiate_model_cbuffer(scene, node_index);
 
-            scene->entities[node_index] |= CMP_LIGHT;
-            scene->lights[node_index].type = LIGHT_TYPE_AREA;
+            scene->entities[node_index] |= e_cmp::light;
+            scene->lights[node_index].type = e_light_type::area;
             scene->area_light[node_index].shader = PEN_INVALID_HANDLE;
         }
 
@@ -487,8 +1128,8 @@ namespace put
             instantiate_material(&area_light_material, scene, node_index);
             instantiate_model_cbuffer(scene, node_index);
 
-            scene->entities[node_index] |= CMP_LIGHT;
-            scene->lights[node_index].type = LIGHT_TYPE_AREA_EX;
+            scene->entities[node_index] |= e_cmp::light;
+            scene->lights[node_index].type = e_light_type::area_ex;
 
             if (!alr.texture_name.empty())
             {
@@ -512,179 +1153,12 @@ namespace put
             scene->area_light_resources[node_index] = alr;
         }
 
-        void load_geometry_resource(const c8* filename, const c8* geometry_name, const c8* data)
-        {
-            // generate hash
-            pen::hash_murmur hm;
-            hm.begin(0);
-            hm.add(filename, pen::string_length(filename));
-            hm.add(geometry_name, pen::string_length(geometry_name));
-            hash_id geom_hash = hm.end();
-
-            // check for existing
-            for (s32 g = 0; g < s_geometry_resources.size(); ++g)
-                if (geom_hash == s_geometry_resources[g]->geom_hash)
-                    return;
-
-            u32* p_reader = (u32*)data;
-            u32  version = *p_reader++;
-            u32  num_meshes = *p_reader++;
-
-            if (version < 1)
-                return;
-
-            std::vector<Str> mat_names;
-            for (u32 submesh = 0; submesh < num_meshes; ++submesh)
-                mat_names.push_back(read_parsable_string((const u32**)&p_reader));
-
-            for (u32 submesh = 0; submesh < num_meshes; ++submesh)
-            {
-                hm.begin(0);
-                hm.add(filename, pen::string_length(filename));
-                hm.add(geometry_name, pen::string_length(geometry_name));
-                hm.add(submesh);
-                hash_id sub_hash = hm.end();
-
-                geometry_resource* p_geometry = new geometry_resource;
-
-                p_geometry->p_skin = nullptr;
-                p_geometry->file_hash = PEN_HASH(filename);
-                p_geometry->geom_hash = geom_hash;
-                p_geometry->hash = sub_hash;
-                p_geometry->geometry_name = geometry_name;
-                p_geometry->filename = filename;
-                p_geometry->material_name = mat_names[submesh];
-                p_geometry->material_id_name = PEN_HASH(mat_names[submesh].c_str());
-                p_geometry->submesh_index = submesh;
-
-                memcpy(&p_geometry->min_extents, p_reader, sizeof(vec3f));
-                p_reader += 3;
-
-                memcpy(&p_geometry->max_extents, p_reader, sizeof(vec3f));
-                p_reader += 3;
-
-                // vb and ib
-                u32 num_pos_floats = *p_reader++;
-                u32 num_floats = *p_reader++;
-                u32 num_indices = *p_reader++;
-                u32 num_collision_floats = *p_reader++;
-                u32 skinned = *p_reader++;
-
-                u32 index_size = num_indices < 65535 ? 2 : 4;
-
-                u32 vertex_size = sizeof(vertex_model);
-
-                if (skinned)
-                {
-                    vertex_size = sizeof(vertex_model_skinned);
-
-                    p_geometry->p_skin = (cmp_skin*)pen::memory_alloc(sizeof(cmp_skin));
-
-                    memcpy(&p_geometry->p_skin->bind_shape_matrix, p_reader, sizeof(mat4));
-                    p_reader += 16;
-
-                    // Conversion from max to lhs - this needs to go into the build pipeline
-                    // max_swap.axis_swap(vec3f(1.0f, 0.0f, 0.0f), vec3f(0.0f, 0.0f, -1.0f), vec3f(0.0f, 1.0f, 0.0f));
-                    // final_bind = max_swap * p_geometry->p_skin->bind_shape_matrix * max_swap_inv;
-                    // joint_bind_matrices[joint] = max_swap * joint_bind_matrices[joint] * max_swap_inv;
-
-                    mat4 final_bind = p_geometry->p_skin->bind_shape_matrix;
-
-                    p_geometry->p_skin->bind_shape_matrix = final_bind;
-
-                    u32 num_ijb_floats = *p_reader++;
-                    memcpy(&p_geometry->p_skin->joint_bind_matrices[0], p_reader, sizeof(f32) * num_ijb_floats);
-                    p_reader += num_ijb_floats;
-
-                    p_geometry->p_skin->num_joints = num_ijb_floats / 16;
-
-                    for (u32 joint = 0; joint < p_geometry->p_skin->num_joints; ++joint)
-                    {
-                        p_geometry->p_skin->joint_bind_matrices[joint] = p_geometry->p_skin->joint_bind_matrices[joint];
-                    }
-
-                    p_geometry->p_skin->bone_cbuffer = PEN_INVALID_HANDLE;
-                }
-
-                p_geometry->vertex_size = vertex_size;
-
-                // all vertex data is written out as 4 byte ints
-                u32 num_verts = num_floats / (vertex_size / sizeof(u32));
-                u32 num_pos_verts = num_pos_floats / (sizeof(vertex_position) / sizeof(u32));
-
-                p_geometry->num_vertices = num_verts;
-
-                pen::buffer_creation_params bcp;
-                bcp.usage_flags = PEN_USAGE_DEFAULT;
-                bcp.bind_flags = PEN_BIND_VERTEX_BUFFER;
-                bcp.cpu_access_flags = 0;
-                bcp.buffer_size = sizeof(vertex_position) * num_pos_verts;
-                bcp.data = (void*)p_reader;
-
-                // keep a cpu copy of position data
-                p_geometry->cpu_position_buffer = pen::memory_alloc(bcp.buffer_size);
-                memcpy(p_geometry->cpu_position_buffer, bcp.data, bcp.buffer_size);
-
-                if (p_geometry->min_extents.x == -1.0f)
-                {
-                    for (u32 v = 0; v < num_pos_verts; ++v)
-                    {
-                        vertex_position vp = ((vertex_position*)p_geometry->cpu_position_buffer)[v];
-                        dev_console_log_level(dev_ui::console_level::message, "Pos: %f, %f, %f", vp.x, vp.y, vp.z);
-                    }
-                }
-
-                p_geometry->position_buffer = pen::renderer_create_buffer(bcp);
-
-                p_reader += bcp.buffer_size / sizeof(f32);
-
-                bcp.buffer_size = vertex_size * num_verts;
-                bcp.data = (void*)p_reader;
-
-                p_geometry->cpu_vertex_buffer = pen::memory_alloc(bcp.buffer_size);
-                memcpy(p_geometry->cpu_vertex_buffer, bcp.data, bcp.buffer_size);
-
-                p_geometry->vertex_buffer = pen::renderer_create_buffer(bcp);
-
-                p_reader += bcp.buffer_size / sizeof(u32);
-
-                bcp.usage_flags = PEN_USAGE_DEFAULT;
-                bcp.bind_flags = PEN_BIND_INDEX_BUFFER;
-                bcp.cpu_access_flags = 0;
-                bcp.buffer_size = index_size * num_indices;
-                bcp.data = (void*)p_reader;
-
-                p_geometry->num_indices = num_indices;
-                p_geometry->index_type = index_size == 2 ? PEN_FORMAT_R16_UINT : PEN_FORMAT_R32_UINT;
-                p_geometry->index_buffer = pen::renderer_create_buffer(bcp);
-
-                // keep a cpu copy of index data
-                p_geometry->cpu_index_buffer = pen::memory_alloc(bcp.buffer_size);
-                memcpy(p_geometry->cpu_index_buffer, bcp.data, bcp.buffer_size);
-
-                p_reader = (u32*)((c8*)p_reader + bcp.buffer_size);
-
-                p_reader += num_collision_floats;
-
-                s_geometry_resources.push_back(p_geometry);
-            }
-        }
-
-        material_resource* get_material_resource(hash_id hash)
-        {
-            for (auto* m : s_material_resources)
-                if (m->hash == hash)
-                    return m;
-
-            return nullptr;
-        }
-
         void instantiate_material(material_resource* mr, ecs_scene* scene, u32 node_index)
         {
             scene->id_material[node_index] = mr->hash;
             scene->material_names[node_index] = mr->material_name;
 
-            scene->entities[node_index] |= CMP_MATERIAL;
+            scene->entities[node_index] |= e_cmp::material;
 
             // set defaults
             if (mr->id_shader == 0)
@@ -699,7 +1173,7 @@ namespace put
 
             static hash_id id_default_sampler_state = PEN_HASH("wrap_linear");
 
-            for (u32 i = 0; i < SN_NUM_TEXTURES; ++i)
+            for (u32 i = 0; i < e_texture::COUNT; ++i)
             {
                 if (!mr->id_sampler_state[i])
                     mr->id_sampler_state[i] = id_default_sampler_state;
@@ -712,14 +1186,14 @@ namespace put
 
         void permutation_flags_from_vertex_class(u32& permutation, hash_id vertex_class)
         {
-            u32 clear_vertex = ~(PERMUTATION_SKINNED | PERMUTATION_INSTANCED);
+            u32 clear_vertex = ~(e_shader_permutation::skinned | e_shader_permutation::instanced);
             permutation &= clear_vertex;
 
             if (vertex_class == ID_VERTEX_CLASS_SKINNED)
-                permutation |= PERMUTATION_SKINNED;
+                permutation |= e_shader_permutation::skinned;
 
             if (vertex_class == ID_VERTEX_CLASS_INSTANCED)
-                permutation |= PERMUTATION_INSTANCED;
+                permutation |= e_shader_permutation::instanced;
         }
 
         void bake_material_handles(ecs_scene* scene, u32 node_index)
@@ -748,23 +1222,23 @@ namespace put
             // material / technique constant buffers
             s32 cbuffer_size = pmfx::get_technique_cbuffer_size(material->shader, material->technique_index);
 
-            if (!(scene->state_flags[node_index] & SF_MATERIAL_INITIALISED))
+            if (!(scene->state_flags[node_index] & e_state::material_initialised))
             {
                 pmfx::initialise_constant_defaults(material->shader, material->technique_index,
                                                    scene->material_data[node_index].data);
 
-                scene->state_flags[node_index] |= SF_MATERIAL_INITIALISED;
+                scene->state_flags[node_index] |= e_state::material_initialised;
             }
 
             instantiate_material_cbuffer(scene, node_index, cbuffer_size);
 
             // material samplers
-            if (!(scene->state_flags[node_index] & SF_SAMPLERS_INITIALISED))
+            if (!(scene->state_flags[node_index] & e_state::samplers_initialised))
             {
                 pmfx::initialise_sampler_defaults(material->shader, material->technique_index, samplers);
 
                 // set material texture from source data
-                for (u32 t = 0; t < SN_NUM_TEXTURES; ++t)
+                for (u32 t = 0; t < e_texture::COUNT; ++t)
                 {
                     if (resource->texture_handles[t] != 0 && is_valid(resource->texture_handles[t]))
                     {
@@ -780,14 +1254,15 @@ namespace put
                     }
                 }
 
-                scene->entities[node_index] |= CMP_SAMPLERS;
-                scene->state_flags[node_index] |= SF_SAMPLERS_INITIALISED;
+                scene->entities[node_index] |= e_cmp::samplers;
+                scene->state_flags[node_index] |= e_state::samplers_initialised;
             }
 
             // bake ss handles
             for (u32 s = 0; s < e_pmfx_constants::max_technique_sampler_bindings; ++s)
                 if (samplers.sb[s].id_sampler_state != 0)
-                    samplers.sb[s].sampler_state = pmfx::get_render_state(samplers.sb[s].id_sampler_state, pmfx::e_render_state::sampler);
+                    samplers.sb[s].sampler_state =
+                        pmfx::get_render_state(samplers.sb[s].id_sampler_state, pmfx::e_render_state::sampler);
         }
 
         void bake_material_handles()
@@ -799,86 +1274,10 @@ namespace put
 
                 for (u32 n = 0; n < scene->soa_size; ++n)
                 {
-                    if (scene->entities[n] & CMP_MATERIAL)
+                    if (scene->entities[n] & e_cmp::material)
                         bake_material_handles(scene, n);
                 }
             }
-        }
-
-        void load_material_resource(const c8* filename, const c8* material_name, const c8* data)
-        {
-            pen::hash_murmur hm;
-            hm.begin();
-            hm.add(filename, pen::string_length(filename));
-            hm.add(material_name, pen::string_length(material_name));
-            hash_id hash = hm.end();
-
-            for (s32 m = 0; m < s_material_resources.size(); ++m)
-                if (s_material_resources[m]->hash == hash)
-                    return;
-
-            const u32* p_reader = (u32*)data;
-
-            u32 version = *p_reader++;
-
-            if (version < 1)
-                return;
-
-            material_resource* p_mat = new material_resource;
-
-            p_mat->material_name = material_name;
-            p_mat->hash = hash;
-
-            // diffuse
-            memcpy(&p_mat->data[0], p_reader, sizeof(vec4f));
-            p_reader += 4;
-
-            // specular
-            memcpy(&p_mat->data[4], p_reader, sizeof(vec4f));
-            p_reader += 4;
-
-            // shininess
-            memcpy(&p_mat->data[3], p_reader, sizeof(f32));
-            p_reader++;
-
-            // reflectivity
-            memcpy(&p_mat->data[7], p_reader, sizeof(f32));
-            p_reader++;
-
-            u32 num_maps = *p_reader++;
-
-            // clear all maps to invalid
-            static const u32 default_maps[] = {put::load_texture("data/textures/defaults/albedo.dds"),
-                                               put::load_texture("data/textures/defaults/normal.dds"),
-                                               put::load_texture("data/textures/defaults/spec.dds"),
-                                               put::load_texture("data/textures/defaults/spec.dds"),
-                                               put::load_texture("data/textures/defaults/black.dds"),
-                                               put::load_texture("data/textures/defaults/black.dds")};
-            static_assert(SN_NUM_TEXTURES == PEN_ARRAY_SIZE(default_maps), "mismatched defaults size");
-
-            for (u32 map = 0; map < SN_NUM_TEXTURES; ++map)
-                p_mat->texture_handles[map] = default_maps[map];
-
-            for (u32 map = 0; map < num_maps; ++map)
-            {
-                u32 map_type = *p_reader++;
-                Str texture_name = read_parsable_string(&p_reader);
-                p_mat->texture_handles[map_type] = put::load_texture(texture_name.c_str());
-            }
-
-            s_material_resources.push_back(p_mat);
-
-            return;
-        }
-
-        static std::vector<animation_resource> k_animations;
-
-        animation_resource* get_animation_resource(anim_handle h)
-        {
-            if (h >= k_animations.size())
-                return nullptr;
-
-            return &k_animations[h];
         }
 
         anim_handle load_pma(const c8* filename)
@@ -890,10 +1289,10 @@ namespace put
             hash_id filename_hash = PEN_HASH(stipped_filename.c_str());
 
             // search for existing
-            s32 num_anims = k_animations.size();
+            s32 num_anims = s_animation_resources.size();
             for (s32 i = 0; i < num_anims; ++i)
             {
-                if (k_animations[i].id_name == filename_hash)
+                if (s_animation_resources[i].id_name == filename_hash)
                 {
                     return (anim_handle)i;
                 }
@@ -920,8 +1319,8 @@ namespace put
                 return PEN_INVALID_HANDLE;
             }
 
-            k_animations.push_back(animation_resource());
-            animation_resource& new_animation = k_animations.back();
+            s_animation_resources.push_back(animation_resource());
+            animation_resource& new_animation = s_animation_resources.back();
 
             new_animation.name = stipped_filename;
             new_animation.id_name = filename_hash;
@@ -958,6 +1357,7 @@ namespace put
                 {
                     u32 sematic = *p_u32reader++;
                     u32 type = *p_u32reader++;
+                    PEN_UNUSED(type);
                     u32 target = *p_u32reader++;
 
                     // read float buffer
@@ -1199,393 +1599,232 @@ namespace put
                 }
             }
 
-            return (anim_handle)k_animations.size() - 1;
+            return (anim_handle)s_animation_resources.size() - 1;
         }
 
-        struct mat_symbol_name
+        void optimise_pmm(const c8* input_filename, const c8* output_filename)
         {
-            hash_id symbol;
-            Str     name;
-        };
+            pmm_contents contents;
+            parse_pmm_contents(input_filename, contents);
+
+            std::vector<pmm_geometry> geom;
+            parse_pmm_geometry(contents, geom);
+
+            // perform optimisations on each submesh
+            std::vector<intptr_t> reductions;
+            u32                   mc = 0;
+            for (auto& g : geom)
+            {
+                // reduction could be negative in theory..
+                // ... especially as index size goes from u16 > u32 so handle it with signed types
+                intptr_t reduction = 0;
+                for (auto& sm : g.submeshes)
+                {
+                    // alloc space for indices
+                    size_t _ib_size = sm.num_indices * sizeof(u32);
+                    u32*   remap = (u32*)pen::memory_alloc(_ib_size);
+                    u32*   ni = (u32*)pen::memory_alloc(_ib_size);
+
+                    // generate efficient index buffer and reduce vertex count
+                    size_t vertex_count = meshopt_generateVertexRemap(&remap[0], nullptr, sm.num_indices, sm.vertex_data,
+                                                                      sm.num_verts, sm.vertex_size);
+
+                    meshopt_remapIndexBuffer(ni, nullptr, sm.num_indices, &remap[0]);
+
+                    // alloc new vertex buffer
+                    size_t _vb_size = sm.vertex_size * vertex_count; // optimised / reduced size
+                    void*  nv = pen::memory_alloc(sm.vertex_size * vertex_count);
+
+                    // todo, position only, collision
+
+                    // remap
+                    meshopt_remapVertexBuffer(nv, sm.vertex_data, sm.num_indices, sm.vertex_size, &remap[0]);
+
+                    // swap winding..
+                    for (u32 i = 0; i < sm.num_indices; i += 3)
+                        std::swap(ni[i], ni[i + 2]);
+
+                    // reduce index size to u16?
+                    sm.index_size = 4;
+
+                    // cleanup the old / temp buffers
+                    pen::memory_free(sm.vertex_data);
+                    pen::memory_free(sm.index_data);
+                    pen::memory_free(remap);
+
+                    // track data reductions
+                    intptr_t vbr = (intptr_t)_vb_size - (intptr_t)sm.vertex_data_size;
+                    intptr_t ibr = (intptr_t)_ib_size - (intptr_t)sm.index_data_size;
+
+                    reduction += vbr + ibr;
+
+                    // reassign
+                    sm.vertex_data = nv;
+                    sm.vertex_data_size = _vb_size;
+                    sm.index_data = ni;
+                    sm.index_data_size = _ib_size;
+                    sm.num_verts = vertex_count;
+                    sm.num_vertex_floats = _vb_size / sizeof(f32);
+
+                    mc++;
+                }
+                reductions.push_back(reduction);
+            }
+
+            // work out the offset adjustments, geom is at the end so we dont need to bother with the last one.
+            for (u32 g = 1; g < contents.num_geometry; ++g)
+                contents.geometry_offsets[g] += reductions[g - 1];
+
+            // ..
+            // below can be refactored as write pmm
+
+            // array of offsets to cacluate size of a block
+            std::vector<size_t> offsets;
+            for (u32 i = 0; i < contents.num_scene; ++i)
+                offsets.push_back(contents.scene_offsets[i]);
+            for (u32 i = 0; i < contents.num_materials; ++i)
+                offsets.push_back(contents.material_offsets[i]);
+            for (u32 i = 0; i < contents.num_geometry; ++i)
+                offsets.push_back(contents.geometry_offsets[i]);
+            offsets.push_back(contents.file_size);
+
+            // write the file back
+            std::ofstream ofs(output_filename, std::ofstream::binary);
+            ofs.write((const c8*)&contents.num_scene, sizeof(u32));
+            ofs.write((const c8*)&contents.num_materials, sizeof(u32));
+            ofs.write((const c8*)&contents.num_geometry, sizeof(u32));
+
+            // write strings and offsets
+            for (u32 s = 0; s < contents.num_scene; ++s)
+            {
+                ofs.write((const c8*)&contents.scene_offsets[s], sizeof(u32));
+            }
+
+            for (u32 m = 0; m < contents.num_materials; ++m)
+            {
+                write_parsable_string_u32(contents.material_names[m], ofs);
+                ofs.write((const c8*)&contents.material_offsets[m], sizeof(u32));
+            }
+
+            for (u32 g = 0; g < contents.num_geometry; ++g)
+            {
+                write_parsable_string_u32(contents.geometry_names[g], ofs);
+                ofs.write((const c8*)&contents.geometry_offsets[g], sizeof(u32));
+            }
+
+            // scenes
+            u32 cur_offset = 0;
+            for (u32 s = 0; s < contents.num_scene; ++s)
+            {
+                const c8* p_scene_data = (const c8*)(contents.data_start + contents.scene_offsets[s]);
+                ofs.write(p_scene_data, offsets[cur_offset + 1] - contents.scene_offsets[s]);
+                cur_offset++;
+            }
+
+            // materials
+            for (u32 m = 0; m < contents.num_materials; ++m)
+            {
+                const c8* p_mat_data = (const c8*)(contents.data_start + contents.material_offsets[m]);
+                ofs.write(p_mat_data, offsets[cur_offset + 1] - contents.material_offsets[m]);
+                cur_offset++;
+            }
+
+            // finally optimised geom we needs to be properly written
+            for (u32 g = 0; g < contents.num_geometry; ++g)
+            {
+                // header and material names
+                ofs.write((const c8*)&geom[g].version, sizeof(u32));
+                ofs.write((const c8*)&geom[g].num_meshes, sizeof(u32));
+                for (auto& mm : geom[g].mat_names)
+                    write_parsable_string_u32(mm, ofs);
+
+                // submeshes
+                for (auto& sm : geom[g].submeshes)
+                {
+                    // header
+                    ofs.write((const c8*)&sm.min_extents, sizeof(vec3f));
+                    ofs.write((const c8*)&sm.max_extents, sizeof(vec3f));
+                    ofs.write((const c8*)&sm.num_verts, sizeof(u32));
+                    ofs.write((const c8*)&sm.index_size, sizeof(u32));
+                    ofs.write((const c8*)&sm.num_pos_floats, sizeof(u32));
+                    ofs.write((const c8*)&sm.num_vertex_floats, sizeof(u32));
+                    ofs.write((const c8*)&sm.num_indices, sizeof(u32));
+                    ofs.write((const c8*)&sm.num_collision_floats, sizeof(u32));
+                    ofs.write((const c8*)&sm.skinned, sizeof(u32));
+                    ofs.write((const c8*)&sm.num_joint_floats, sizeof(u32));
+                    ofs.write((const c8*)&sm.bind_shape_matrix, sizeof(mat4));
+                    // data buffers
+                    ofs.write((const c8*)sm.joint_data, sm.joint_data_size);
+                    ofs.write((const c8*)sm.position_data, sm.position_data_size);
+                    ofs.write((const c8*)sm.vertex_data, sm.vertex_data_size);
+                    ofs.write((const c8*)sm.index_data, sm.index_data_size);
+                    ofs.write((const c8*)sm.collision_data, sm.collision_data_size);
+                }
+            }
+
+            ofs.close();
+
+            // cleanup memory
+            for (auto& g : geom)
+            {
+                for (auto& sm : g.submeshes)
+                {
+                    pen::memory_free(sm.vertex_data);
+                    pen::memory_free(sm.position_data);
+                    pen::memory_free(sm.index_data);
+                    pen::memory_free(sm.joint_data);
+                    pen::memory_free(sm.collision_data);
+                }
+            }
+            pen::memory_free(contents.file_data);
+        }
+
+        void optimise_pma(const c8* input_filename, const c8* output_filename)
+        {
+            // todo
+        }
 
         s32 load_pmm(const c8* filename, ecs_scene* scene, u32 load_flags)
         {
-            if (scene)
-                scene->flags |= e_scene_flags::invalidate_scene_tree;
+            // pmm contains scene node, material, and geometry resources
+            pmm_contents contents;
+            parse_pmm_contents(filename, contents);
 
-            void* model_file;
-            u32   model_file_size;
-
-            pen_error err = pen::filesystem_read_file_to_buffer(filename, &model_file, model_file_size);
-
-            if (err != PEN_ERR_OK || model_file_size == 0)
-            {
-                dev_ui::log_level(dev_ui::console_level::error, "[error] load pmm - failed to find file: %s", filename);
-                return PEN_INVALID_HANDLE;
-            }
-
-            const u32* p_u32reader = (u32*)model_file;
-
-            u32 num_scene = *p_u32reader++;
-            u32 num_geom = *p_u32reader++;
-            u32 num_materials = *p_u32reader++;
-
-            std::vector<u32> scene_offsets;
-            std::vector<u32> geom_offsets;
-            std::vector<u32> material_offsets;
-
-            std::vector<Str> material_names;
-            std::vector<Str> geometry_names;
-
-            std::vector<hash_id> id_geometry;
-
-            for (s32 i = 0; i < num_scene; ++i)
-                scene_offsets.push_back(*p_u32reader++);
-
-            for (s32 i = 0; i < num_materials; ++i)
-            {
-                Str name = read_parsable_string(&p_u32reader);
-                material_offsets.push_back(*p_u32reader++);
-                material_names.push_back(name);
-            }
-
-            for (s32 i = 0; i < num_geom; ++i)
-            {
-                Str name = read_parsable_string(&p_u32reader);
-                geom_offsets.push_back(*p_u32reader++);
-                id_geometry.push_back(PEN_HASH(name.c_str()));
-                geometry_names.push_back(name);
-            }
-
-            c8* p_data_start = (c8*)p_u32reader;
-
-            p_u32reader = (u32*)p_data_start + scene_offsets[0];
-            u32 version = *p_u32reader++;
-            u32 num_import_nodes = *p_u32reader++;
-
-            if (version < 1)
-            {
-                pen::memory_free(model_file);
-                return PEN_INVALID_HANDLE;
-            }
-
-            // load resources
+            // load material resources
             if (load_flags & e_pmm_load_flags::material)
             {
-                for (u32 m = 0; m < num_materials; ++m)
+                for (u32 m = 0; m < contents.num_materials; ++m)
                 {
-                    u32* p_mat_data = (u32*)(p_data_start + material_offsets[m]);
-                    load_material_resource(filename, material_names[m].c_str(), (const c8*)p_mat_data);
+                    u32* p_mat_data = (u32*)(contents.data_start + contents.material_offsets[m]);
+                    load_material_resource(filename, contents.material_names[m].c_str(), p_mat_data);
                 }
             }
 
+            // load geometry resources
             if (load_flags & e_pmm_load_flags::geometry)
+                load_pmm_geometry(filename, contents);
+
+            // load nodes.. we need to do this last because they depend on the material and geometry resources.
+            s32 root = PEN_INVALID_HANDLE;
+            if (load_flags & e_pmm_load_flags::nodes)
             {
-                for (u32 g = 0; g < num_geom; ++g)
+                for (u32 s = 0; s < contents.num_scene; ++s)
                 {
-                    u32* p_geom_data = (u32*)(p_data_start + geom_offsets[g]);
-                    load_geometry_resource(filename, geometry_names[g].c_str(), (const c8*)p_geom_data);
+                    u32* p_scene_data = (u32*)(contents.data_start + contents.scene_offsets[s]);
+                    u32  scene_start = load_nodes_resource(filename, scene, p_scene_data);
+                    if (s == 0)
+                        root = scene_start;
                 }
+
+                // invalidate trees to rebuild
+                if (contents.num_scene > 0)
+                    if (scene)
+                        scene->flags |= e_scene_flags::invalidate_scene_tree;
             }
 
-            if (!(load_flags & e_pmm_load_flags::nodes))
-            {
-                pen::memory_free(model_file);
-                return PEN_INVALID_HANDLE;
-            }
-
-            // scene nodes
-            bool has_control_rig = false;
-            s32  nodes_start, nodes_end;
-            get_new_entities_append(scene, num_import_nodes, nodes_start, nodes_end);
-
-            u32 node_zero_offset = nodes_start;
-            u32 current_node = node_zero_offset;
-            u32 inserted_nodes = 0;
-
-            // load scene nodes
-            for (u32 n = 0; n < num_import_nodes; ++n)
-            {
-                p_u32reader++; // e_node type
-
-                Str node_name = read_parsable_string(&p_u32reader);
-                Str geometry_name = read_parsable_string(&p_u32reader);
-
-                scene->id_name[current_node] = PEN_HASH(node_name.c_str());
-                scene->id_geometry[current_node] = PEN_HASH(geometry_name.c_str());
-
-                scene->names[current_node] = node_name;
-                scene->geometry_names[current_node] = geometry_name;
-
-                scene->entities[current_node] |= CMP_ALLOCATED;
-
-                if (scene->id_geometry[current_node] == ID_JOINT)
-                    scene->entities[current_node] |= CMP_BONE;
-
-                if (scene->id_name[current_node] == ID_TRAJECTORY)
-                    scene->entities[current_node] |= CMP_ANIM_TRAJECTORY;
-
-                u32 num_meshes = *p_u32reader++;
-
-                std::vector<mat_symbol_name> mesh_material_names;
-
-                // material pre load
-                for (u32 mat = 0; mat < num_meshes; ++mat)
-                {
-                    Str name = read_parsable_string(&p_u32reader);
-                    Str symbol = read_parsable_string(&p_u32reader);
-
-                    mesh_material_names.push_back({PEN_HASH(symbol.c_str()), name});
-                }
-
-                // transformation load
-                u32 parent = *p_u32reader++ + node_zero_offset + inserted_nodes;
-                scene->parents[current_node] = parent;
-                u32 transforms = *p_u32reader++;
-
-                // parent fix up to contain control rig
-                if (scene->id_name[current_node] == ID_CONTROL_RIG)
-                {
-                    has_control_rig = true;
-                    scene->parents[current_node] = node_zero_offset;
-                }
-
-                // if we find a trajectory node with no control rig.. we can use that to identify a rig
-                if (!has_control_rig)
-                    if (scene->id_name[current_node] == ID_TRAJECTORY)
-                        scene->parents[current_node] = node_zero_offset;
-
-                vec3f translation;
-                vec4f rotations[3];
-                mat4  matrix;
-                bool  has_matrix_transform = false;
-                u32   num_rotations = 0;
-
-                static f32 zero_rotation_epsilon = 0.000001f;
-                for (u32 t = 0; t < transforms; ++t)
-                {
-                    u32 type = *p_u32reader++;
-
-                    switch (type)
-                    {
-                        case e_pmm_transform::translate:
-                            memcpy(&translation, p_u32reader, 12);
-                            p_u32reader += 3;
-                            break;
-                        case e_pmm_transform::rotate:
-                            memcpy(&rotations[num_rotations], p_u32reader, 16);
-                            rotations[num_rotations].w = maths::deg_to_rad(rotations[num_rotations].w);
-                            if (rotations[num_rotations].w < zero_rotation_epsilon &&
-                                rotations[num_rotations].w > zero_rotation_epsilon)
-                                rotations[num_rotations].w = 0.0f;
-                            num_rotations++;
-                            p_u32reader += 4;
-                            break;
-                        case e_pmm_transform::matrix:
-                            has_matrix_transform = true;
-                            memcpy(&matrix, p_u32reader, 16 * 4);
-                            p_u32reader += 16;
-                            break;
-                        case e_pmm_transform::identity:
-                            has_matrix_transform = true;
-                            matrix = mat4::create_identity();
-                            break;
-                        default:
-                            // unsupported transform type
-                            PEN_ASSERT(0);
-                            break;
-                    }
-                }
-
-                quat final_rotation;
-                if (num_rotations == 0)
-                {
-                    // no rotation
-                    final_rotation.euler_angles(0.0f, 0.0f, 0.0f);
-                }
-                else if (num_rotations == 1)
-                {
-                    // axis angle
-                    final_rotation.axis_angle(rotations[0]);
-                }
-                else if (num_rotations == 3)
-                {
-                    // euler angles
-                    f32 z_theta = 0;
-                    f32 y_theta = 0;
-                    f32 x_theta = 0;
-
-                    for (u32 r = 0; r < 3; ++r)
-                    {
-                        if (rotations[r].z == 1.0f)
-                        {
-                            z_theta = rotations[r].w;
-                        }
-                        else if (rotations[r].y == 1.0f)
-                        {
-                            y_theta = rotations[r].w;
-                        }
-                        else if (rotations[r].x == 1.0f)
-                        {
-                            x_theta = rotations[r].w;
-                        }
-
-                        final_rotation.euler_angles(z_theta, y_theta, x_theta);
-                    }
-                }
-
-                if (!has_matrix_transform)
-                {
-                    // create matrix from transform
-                    scene->transforms[current_node].translation = translation;
-                    scene->transforms[current_node].rotation = final_rotation;
-                    scene->transforms[current_node].scale = vec3f::one();
-
-                    // make a transform matrix for geometry
-                    mat4 rot_mat;
-                    final_rotation.get_matrix(rot_mat);
-
-                    mat4 translation_mat = mat::create_translation(translation);
-
-                    matrix = translation_mat * rot_mat;
-                }
-                else
-                {
-                    // decompose matrix into transform
-                    scene->transforms[current_node].translation = matrix.get_translation();
-                    scene->transforms[current_node].rotation.from_matrix(matrix);
-
-                    f32 sx = mag(matrix.get_row(0).xyz);
-                    f32 sy = mag(matrix.get_row(1).xyz);
-                    f32 sz = mag(matrix.get_row(2).xyz);
-
-                    scene->transforms[current_node].scale = vec3f(sx, sy, sz);
-                }
-
-                scene->initial_transform[current_node].rotation = scene->transforms[current_node].rotation;
-                scene->initial_transform[current_node].translation = scene->transforms[current_node].translation;
-                scene->initial_transform[current_node].scale = scene->transforms[current_node].scale;
-
-                scene->local_matrices[current_node] = (matrix);
-
-                // store intial position for physics to hook into later
-                scene->physics_data[current_node].rigid_body.position = translation;
-                scene->physics_data[current_node].rigid_body.rotation = final_rotation;
-
-                // assign geometry, materials and physics
-                u32 dest = current_node;
-                if (num_meshes > 0)
-                {
-                    for (u32 submesh = 0; submesh < num_meshes; ++submesh)
-                    {
-                        dest = current_node + submesh;
-
-                        Str node_suffix;
-                        node_suffix.appendf("_%i", submesh);
-
-                        if (submesh > 0)
-                        {
-                            inserted_nodes++;
-                            clone_entity(scene, current_node, dest, current_node, CLONE_INSTANTIATE, vec3f::zero(),
-                                         (const c8*)node_suffix.c_str());
-                            scene->local_matrices[dest] = mat4::create_identity();
-
-                            // child geometry which will inherit any skinning from its parent
-                            scene->entities[dest] |= CMP_SUB_GEOMETRY;
-                        }
-
-                        // generate geometry hash
-                        pen::hash_murmur hm;
-                        hm.begin(0);
-                        hm.add(filename, pen::string_length(filename));
-                        hm.add(geometry_name.c_str(), geometry_name.length());
-                        hm.add(submesh);
-                        hash_id geom_hash = hm.end();
-
-                        scene->id_geometry[dest] = geom_hash;
-
-                        geometry_resource* gr = get_geometry_resource(geom_hash);
-
-                        if (gr)
-                        {
-                            instantiate_geometry(gr, scene, dest);
-
-                            instantiate_model_cbuffer(scene, dest);
-
-                            // find mat name from symbol
-                            Str mat_name = "";
-                            for (auto& ms : mesh_material_names)
-                                if (ms.symbol == gr->material_id_name)
-                                    mat_name = ms.name;
-
-                            hm.begin();
-                            hm.add(filename, pen::string_length(filename));
-                            hm.add(mat_name.c_str(), mat_name.length());
-                            hash_id material_hash = hm.end();
-
-                            material_resource* mr = get_material_resource(material_hash);
-
-                            if (mr)
-                            {
-                                scene->material_names[dest] = mat_name;
-
-                                // due to cloning, clear these flags
-                                scene->state_flags[dest] &= ~SF_MATERIAL_INITIALISED;
-                                scene->state_flags[dest] &= ~SF_SAMPLERS_INITIALISED;
-
-                                instantiate_material(mr, scene, dest);
-
-                                scene->id_material[dest] = material_hash;
-                            }
-                            else
-                            {
-                                static hash_id id_default = PEN_HASH("default_material");
-
-                                mr = get_material_resource(id_default);
-
-                                scene->material_names[dest] = "default_material";
-
-                                instantiate_material(mr, scene, dest);
-
-                                scene->id_material[dest] = id_default;
-                            }
-                        }
-                        else
-                        {
-                            put::dev_ui::log_level(dev_ui::console_level::error, "[error] geometry - missing file : %s",
-                                                   geometry_name.c_str());
-                        }
-                    }
-                }
-
-                current_node = dest + 1;
-            }
-
-            // now we have loaded the whole scene fix up any anim controllers
-            for (s32 i = node_zero_offset; i < node_zero_offset + num_import_nodes; ++i)
-            {
-                if (scene->entities[i] & CMP_SUB_GEOMETRY)
-                    continue;
-
-                // parent geometry deals with skinning
-                if ((scene->entities[i] & CMP_GEOMETRY) && scene->geometries[i].p_skin)
-                {
-                    instantiate_anim_controller(scene, i);
-                    instantiate_anim_controller_v2(scene, i);
-                }
-            }
-
-            pen::memory_free(model_file);
-            return nodes_start;
+            pen::memory_free(contents.file_data);
+            return root;
         }
-
-        struct volume_instance
-        {
-            hash_id id;
-            hash_id id_technique;
-            hash_id id_sampler_state;
-            u32     cmp_flags;
-        };
 
         s32 load_pmv(const c8* filename, ecs_scene* scene)
         {
@@ -1599,9 +1838,9 @@ namespace put
             hash_id id_type = pmv["volume_type"].as_hash_id();
 
             static volume_instance vi[] = {
-                {PEN_HASH("volume_texture"), PEN_HASH("volume_texture"), PEN_HASH("clamp_point"), CMP_VOLUME},
+                {PEN_HASH("volume_texture"), PEN_HASH("volume_texture"), PEN_HASH("clamp_point"), e_cmp::volume},
 
-                {PEN_HASH("signed_distance_field"), PEN_HASH("volume_sdf"), PEN_HASH("clamp_linear"), CMP_SDF_SHADOW}};
+                {PEN_HASH("signed_distance_field"), PEN_HASH("volume_sdf"), PEN_HASH("clamp_linear"), e_cmp::sdf_shadow}};
 
             int i = 0;
             for (auto& v : vi)
@@ -1632,12 +1871,13 @@ namespace put
             scene->transforms[v].rotation = quat();
             scene->transforms[v].scale = scale;
             scene->transforms[v].translation = pos;
-            scene->entities[v] |= CMP_TRANSFORM;
+            scene->entities[v] |= e_cmp::transform;
             scene->parents[v] = v;
 
-            scene->samplers[v].sb[0].sampler_unit = SN_VOLUME_TEXTURE;
+            scene->samplers[v].sb[0].sampler_unit = e_texture::volume;
             scene->samplers[v].sb[0].handle = volume_texture;
-            scene->samplers[v].sb[0].sampler_state = pmfx::get_render_state(vi[i].id_sampler_state, pmfx::e_render_state::sampler);
+            scene->samplers[v].sb[0].sampler_state =
+                pmfx::get_render_state(vi[i].id_sampler_state, pmfx::e_render_state::sampler);
 
             instantiate_geometry(cube, scene, v);
             instantiate_material(material, scene, v);

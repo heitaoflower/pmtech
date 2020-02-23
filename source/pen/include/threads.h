@@ -2,20 +2,12 @@
 // Copyright 2014 - 2019 Alex Dixon.
 // License: https://github.com/polymonster/pmtech/blob/master/license.md
 
-#ifndef _thread_h
-#define _thread_h
-
-// Minimalist c-style thread wrapper api.
+// Minimalist cross platform thread wrapper api.
 // Includes functions to create jobs, threads, mutex and semaphore.
 
-#include "pen.h"
+#pragma once
 
-#if _WIN32
-#include <windows.h>
-#define PEN_THREAD_ROUTINE(FP) LPTHREAD_START_ROUTINE FP
-#else
-#define PEN_THREAD_ROUTINE(FP) PEN_TRV (*FP)(void* data)
-#endif
+#include "pen.h"
 
 namespace pen
 {
@@ -24,6 +16,7 @@ namespace pen
     struct semaphore;
 
     typedef void (*completion_callback)(void*);
+    typedef void* (*dispatch_thread)(void*);
 
     // A Job is just a thread with some user data, a callback
     // and some syncronisation semaphores
@@ -46,18 +39,16 @@ namespace pen
         void* user_data;
     };
 
-    enum thread_start_flags : u32
+    namespace e_thread_start_flags
     {
-        THREAD_START_DETACHED = 1,
-        THREAD_START_JOINABLE = 2,
-        THREAD_CALL_FUNCTION = 3
-    };
-
-    enum default_thread_create_flags
-    {
-        PEN_CREATE_RENDER_THREAD = 1 << 0,
-        PEN_CREATE_AUDIO_THREAD = 1 << 1,
-    };
+        enum thread_start_flags_t
+        {
+            detached = 1,
+            joinable = 1 << 2,
+            call_function = 1 << 3
+        };
+    }
+    typedef e_thread_start_flags::thread_start_flags_t thread_start_flags;
 
     struct default_thread_info
     {
@@ -68,7 +59,7 @@ namespace pen
     };
 
     // Threads
-    thread* thread_create(PEN_THREAD_ROUTINE(thread_func), u32 stack_size, void* thread_params, thread_start_flags flags);
+    thread* thread_create(dispatch_thread thread_func, u32 stack_size, void* thread_params, thread_start_flags flags);
     void    thread_destroy(pen::thread* p_thread);
     void    thread_sleep_ms(u32 milliseconds);
     void    thread_sleep_us(u32 microseconds);
@@ -76,7 +67,7 @@ namespace pen
     // Jobs
     void jobs_create_default(const default_thread_info& info);
     bool jobs_terminate_all();
-    job* jobs_create_job(PEN_THREAD_ROUTINE(thread_func), u32 stack_size, void* user_data, thread_start_flags flags,
+    job* jobs_create_job(dispatch_thread thread_func, u32 stack_size, void* user_data, thread_start_flags flags,
                          completion_callback cb = nullptr);
 
     // Mutex
@@ -94,5 +85,3 @@ namespace pen
     void       semaphore_post(semaphore* p_semaphore, u32 count);
 
 } // namespace pen
-
-#endif

@@ -4,9 +4,15 @@
 
 #pragma once
 
+#include "hash.h"
 #include "renderer.h"
-#include "str/Str.h"
 #include "types.h"
+
+#include "str/Str.h"
+
+static const hash_id ID_VERTEX_CLASS_INSTANCED = PEN_HASH("_instanced");
+static const hash_id ID_VERTEX_CLASS_SKINNED = PEN_HASH("_skinned");
+static const hash_id ID_VERTEX_CLASS_BASIC = PEN_HASH("");
 
 namespace put
 {
@@ -31,7 +37,7 @@ namespace put
         };
     }
     typedef e_update_order::update_order_t update_order;
-    
+
     namespace e_pmfx_constants
     {
         enum pmfx_constants_t
@@ -40,6 +46,16 @@ namespace put
             max_sampler_bindings = 16
         };
     }
+
+    namespace e_shader_permutation
+    {
+        enum shader_permutation_t
+        {
+            skinned = 1 << 31,
+            instanced = 1 << 30
+        };
+    }
+    typedef u32 shader_permutation;
 
     struct scene_view
     {
@@ -106,7 +122,7 @@ namespace put
                 COUNT
             };
         }
-        
+
         namespace e_permutation_widget
         {
             enum permutation_widget_t
@@ -116,7 +132,7 @@ namespace put
                 COUNT
             };
         }
-        
+
         namespace e_cbuffer_location
         {
             enum cbuffer_location_t
@@ -133,7 +149,7 @@ namespace put
                 post_process_info = 3
             };
         }
-        
+
         namespace e_render_state
         {
             enum render_state_t
@@ -145,18 +161,18 @@ namespace put
             };
         }
         typedef e_render_state::render_state_t render_state_t;
-        
+
         namespace e_rt_flags
         {
             enum rt_flags_t
             {
-                aux = 1<<1,
-                aux_used = 1<<2,
-                write_only = 1<<3,
-                resolve = 1<<4
+                aux = 1 << 1,
+                aux_used = 1 << 2,
+                write_only = 1 << 3,
+                resolve = 1 << 4
             };
         }
-        
+
         namespace e_vrt_mode
         {
             enum vrt_mode_t
@@ -167,6 +183,17 @@ namespace put
             };
         }
         typedef e_vrt_mode::vrt_mode_t vrt_mode;
+
+        namespace e_scene_render_flags
+        {
+            enum scene_render_flags_t
+            {
+                forward_lit = 1,
+                deferred_lit = 1 << 1,
+                COUNT
+            };
+        }
+        typedef e_scene_render_flags::scene_render_flags_t scene_render_flags;
 
         struct technique_constant
         {

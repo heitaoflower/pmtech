@@ -2,16 +2,22 @@
 // Copyright 2014 - 2019 Alex Dixon.
 // License: https://github.com/polymonster/pmtech/blob/master/license.md
 
+// Simple input api for getting keyboard and mouse presses + unicode characters, gamepad states
+// Implemented with:
+//      win32 (windows)
+//      NS (mac, ios)
+//      xlib (linux)
+// Gamepad api: (libstemgamepad)
+//      xinput (windows xbox360 controller)
+//      direct input (windows other controllers)
+//      raw usb input (mac, linux)
+
 #pragma once
 
-// Simple input api for getting keyboard and mouse presses + unicode characters
-// Implemented with win32, NS and xlib
-// Gamepad api using libstemgamepad
-
+#include "os.h"
 #include "pen.h"
-#include "str/Str.h"
 
-extern pen::window_creation_params pen_window;
+#include "str/Str.h"
 
 enum gamepad_button
 {
@@ -71,15 +77,13 @@ namespace pen
         u8  button[PGP_BUTTON_COUNT];
         f32 axis[PGP_AXIS_COUNT];
     };
-    
+
     void input_set_unicode_key_down(u32 key_index);
     void input_set_unicode_key_up(u32 key_index);
     bool input_get_unicode_key(u32 key_index);
-    
+
     void input_add_unicode_input(const c8* utf8);
     Str  input_get_unicode_input();
-    void input_clear_unicode_input();
-    void input_unicode_swap_buffers();
 
     void input_set_key_down(u32 key_index);
     void input_set_key_up(u32 key_index);
@@ -117,7 +121,9 @@ namespace pen
 
     inline bool mouse_coords_valid(u32 x, u32 y)
     {
-        return x < pen_window.width && y < pen_window.height;
+        s32 w, h;
+        window_get_size(w, h);
+        return x < w && y < h;
     }
 
     inline bool input_key(u32 key_index)
@@ -129,12 +135,12 @@ namespace pen
     {
         return pen::input_is_mouse_down(button_index);
     }
-    
+
     inline bool press_debounce(u32 key, bool& db)
     {
-        if(pen::input_key(key))
+        if (pen::input_key(key))
         {
-            if(!db)
+            if (!db)
             {
                 db = true;
                 return true;
@@ -144,7 +150,7 @@ namespace pen
         {
             db = false;
         }
-        
+
         return false;
     }
 

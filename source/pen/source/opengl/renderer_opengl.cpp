@@ -5,29 +5,27 @@
 #define GL_SILENCE_DEPRECATION
 #define GLES_SILENCE_DEPRECATION
 
-#include "renderer.h"
-#include "renderer_shared.h"
+#include "console.h"
+#include "data_struct.h"
 #include "hash.h"
 #include "memory.h"
 #include "pen.h"
 #include "pen_string.h"
+#include "renderer.h"
+#include "renderer_shared.h"
 #include "threads.h"
 #include "timer.h"
-#include "console.h"
-#include "data_struct.h"
 
 #include "str/Str.h"
 
-#include <vector>
 #include <stdlib.h>
+#include <vector>
 
 extern pen::window_creation_params pen_window;
 
 // these are required for platform specific gl implementation calls.
 extern void pen_make_gl_context_current();
 extern void pen_gl_swap_buffers();
-
-a_u8        g_window_resize(0);
 
 namespace
 {
@@ -406,13 +404,6 @@ namespace pen
     };
     static shader_program* s_shader_programs;
 
-    struct managed_render_target
-    {
-        texture_creation_params tcp;
-        u32                     render_target_handle;
-    };
-    static managed_render_target* s_managed_render_targets;
-
     struct resource_allocation
     {
         u8     asigned_flag;
@@ -608,32 +599,27 @@ namespace pen
     {
         // unused for opengl, required to sync for metal
     }
-    
+
     void direct::renderer_new_frame()
     {
         pen_make_gl_context_current();
         _renderer_new_frame();
-        
+
         // if we resize render targets, delete frame buffers to invalidate and recreate them
         static u32 rs = 0;
-        if(_renderer_resize_index() != rs)
+        if (_renderer_resize_index() != rs)
         {
             rs = _renderer_resize_index();
             sb_free(s_framebuffers);
             s_framebuffers = nullptr;
         }
     }
-    
+
     void direct::renderer_end_frame()
     {
         // unused on this platform
     }
-    
-    bool direct::renderer_frame_valid()
-    {
-        return true;
-    }
-    
+
     void direct::renderer_clear(u32 clear_state_index, u32 colour_face, u32 depth_face)
     {
         resource_allocation&  rc = _res_pool[clear_state_index];
@@ -934,9 +920,8 @@ namespace pen
         }
         else
         {
-            if (g_current_state.vertex_shader != g_bound_state.vertex_shader || 
-                g_current_state.pixel_shader != g_bound_state.pixel_shader ||
-                g_current_state.v_flip != g_bound_state.v_flip)
+            if (g_current_state.vertex_shader != g_bound_state.vertex_shader ||
+                g_current_state.pixel_shader != g_bound_state.pixel_shader || g_current_state.v_flip != g_bound_state.v_flip)
             {
                 g_bound_state.vertex_shader = g_current_state.vertex_shader;
                 g_bound_state.pixel_shader = g_current_state.pixel_shader;
@@ -1331,8 +1316,8 @@ namespace pen
         res.type = RES_RENDER_TARGET;
 
         texture_creation_params _tcp = _renderer_tcp_resolve_ratio(tcp);
-        
-        if(track)
+
+        if (track)
             _renderer_track_managed_render_target(tcp, resource_slot);
 
         res.render_target.uid = (u32)get_time_ms();
@@ -1515,8 +1500,8 @@ namespace pen
         resource_allocation& colour_res = _res_pool[target];
 
         hash_id hash[2] = {0, 0};
-        
-        if(!colour_res.render_target.tcp)
+
+        if (!colour_res.render_target.tcp)
             return;
 
         f32 w = colour_res.render_target.tcp->width;
@@ -1781,16 +1766,17 @@ namespace pen
 
     void direct::renderer_set_viewport(const viewport& vp)
     {
-        g_current_vp = vp;
-
-        CHECK_CALL(glViewport(vp.x, vp.y, vp.width, vp.height));
-        CHECK_CALL(glDepthRangef(vp.min_depth, vp.max_depth));
+        viewport _vp = _renderer_resolve_viewport_ratio(vp);
+        g_current_vp = _vp;
+        CHECK_CALL(glViewport(_vp.x, _vp.y, _vp.width, _vp.height));
+        CHECK_CALL(glDepthRangef(_vp.min_depth, _vp.max_depth));
     }
 
     void direct::renderer_set_scissor_rect(const rect& r)
     {
-        f32 top = g_current_vp.height - r.bottom;
-        CHECK_CALL(glScissor(r.left, top, r.right - r.left, r.bottom - r.top));
+        rect _r = _renderer_resolve_scissor_ratio(r);
+        f32  top = g_current_vp.height - _r.bottom;
+        CHECK_CALL(glScissor(_r.left, top, _r.right - _r.left, _r.bottom - _r.top));
     }
 
     void direct::renderer_create_blend_state(const blend_creation_params& bcp, u32 resource_slot)
@@ -1847,7 +1833,7 @@ namespace pen
         resource_allocation& res = _res_pool[buffer_index];
         CHECK_CALL(glBindBufferBase(GL_UNIFORM_BUFFER, resource_slot, res.handle));
     }
-    
+
     void direct::renderer_set_structured_buffer(u32 buffer_index, u32 resource_slot, u32 flags)
     {
         PEN_ASSERT(0); // stubbed.. use metal on mac or d3d / vulkan on windows
@@ -2014,20 +2000,7 @@ namespace pen
 
     void direct::renderer_release_render_target(u32 render_target)
     {
-        // remove from managed rt
-        managed_render_target* erased = nullptr;
-
-        u32 num_man_rt = sb_count(s_managed_render_targets);
-        for (s32 i = num_man_rt - 1; i >= 0; --i)
-        {
-            if (s_managed_render_targets[i].render_target_handle == render_target)
-                continue;
-
-            sb_push(erased, s_managed_render_targets[i]);
-        }
-
-        sb_free(s_managed_render_targets);
-        s_managed_render_targets = erased;
+        _renderer_untrack_managed_render_target(render_target);
 
         resource_allocation& res = _res_pool[render_target];
 

@@ -11,12 +11,21 @@
 
 using namespace put;
 
-pen::window_creation_params pen_window{
-    1280,                   // width
-    720,                    // height
-    4,                      // MSAA samples
-    "buffer_multi_update"   // window title / process name
-};
+void* pen::user_entry(void* params);
+namespace pen
+{
+    pen_creation_params pen_entry(int argc, char** argv)
+    {
+        pen::pen_creation_params p;
+        p.window_width = 1280;
+        p.window_height = 720;
+        p.window_title = "buffer_multi_update";
+        p.window_sample_count = 4;
+        p.user_thread_function = user_entry;
+        p.flags = pen::e_pen_create_flags::renderer;
+        return p;
+    }
+} // namespace pen
 
 struct vertex
 {
@@ -29,7 +38,7 @@ struct draw_call
     float r, g, b, a;
 };
 
-PEN_TRV pen::user_entry(void* params)
+void* pen::user_entry(void* params)
 {
     // unpack the params passed to the thread and signal to the engine it ok to proceed
     pen::job_thread_params* job_params = (pen::job_thread_params*)params;
@@ -56,14 +65,14 @@ PEN_TRV pen::user_entry(void* params)
     u32 textured_shader = pmfx::load_shader("buffer_multi_update");
 
     // manually scale 16:9 to 1:1
-    f32 x_size = 0.5f / ((f32)pen_window.width / pen_window.height);
+    f32 x_size = 0.5f / pen::window_get_aspect();
 
     // create vertex buffer for a quad
     vertex quad_vertices[] = {
-        -x_size, -0.5f,  0.5f, 1.0f, // p1
-        -x_size, 0.5f,   0.5f, 1.0f, // p
-        x_size,  0.5f,   0.5f, 1.0f, // p3
-        x_size,  -0.5f,  0.5f, 1.0f  // p4
+        -x_size, -0.5f, 0.5f, 1.0f, // p1
+        -x_size, 0.5f,  0.5f, 1.0f, // p
+        x_size,  0.5f,  0.5f, 1.0f, // p3
+        x_size,  -0.5f, 0.5f, 1.0f  // p4
     };
 
     pen::buffer_creation_params bcp;
@@ -86,33 +95,31 @@ PEN_TRV pen::user_entry(void* params)
     bcp.data = (void*)&indices[0];
 
     u32 quad_index_buffer = pen::renderer_create_buffer(bcp);
-    
+
     // cbuffer
     bcp.usage_flags = PEN_USAGE_DYNAMIC;
     bcp.bind_flags = PEN_BIND_CONSTANT_BUFFER;
     bcp.cpu_access_flags = PEN_CPU_ACCESS_WRITE;
     bcp.buffer_size = sizeof(draw_call);
     bcp.data = nullptr;
-    
+
     u32 cbuffer_draw = pen::renderer_create_buffer(bcp);
-    
+
     f32 offsetx = 0.3f * x_size;
     f32 offsety = 0.3f;
-    
+
     // multiple draw call info
-    draw_call draw_calls[] = {
-        {-offsetx, -offsety, 0.0f, 1.0f, 0.5f, 0.8f, 0.0f, 1.0f},
-        { offsetx, -offsety, 0.0f, 1.0f, 0.0f, 0.5f, 1.0f, 1.0f},
-        { offsetx,  offsety, 0.0f, 1.0f, 1.0f, 0.5f, 0.0f, 1.0f},
-        {-offsetx,  offsety, 0.0f, 1.0f, 0.5f, 0.0f, 0.5f, 1.0f}
-    };
+    draw_call draw_calls[] = {{-offsetx, -offsety, 0.0f, 1.0f, 0.5f, 0.8f, 0.0f, 1.0f},
+                              {offsetx, -offsety, 0.0f, 1.0f, 0.0f, 0.5f, 1.0f, 1.0f},
+                              {offsetx, offsety, 0.0f, 1.0f, 1.0f, 0.5f, 0.0f, 1.0f},
+                              {-offsetx, offsety, 0.0f, 1.0f, 0.5f, 0.0f, 0.5f, 1.0f}};
 
     while (1)
     {
         pen::renderer_set_rasterizer_state(raster_state);
 
         // bind back buffer and clear
-        pen::viewport vp = {0.0f, 0.0f, (f32)pen_window.width, (f32)pen_window.height, 0.0f, 1.0f};
+        pen::viewport vp = {0.0f, 0.0f, PEN_BACK_BUFFER_RATIO, 1.0f, 0.0f, 1.0f};
         pen::renderer_set_viewport(vp);
         pen::renderer_set_scissor_rect(rect{vp.x, vp.y, vp.width, vp.height});
 
@@ -121,11 +128,11 @@ PEN_TRV pen::user_entry(void* params)
 
         // draw quads
         {
-            for(u32 i = 0; i < 4; ++i)
+            for (u32 i = 0; i < 4; ++i)
             {
                 // update cbuffer.. use single buffer and update multiple times.
                 pen::renderer_update_buffer(cbuffer_draw, &draw_calls[i], sizeof(draw_call));
-            
+
                 // bind vertex layout and shaders
                 pmfx::set_technique(textured_shader, 0);
 
@@ -133,7 +140,7 @@ PEN_TRV pen::user_entry(void* params)
                 u32 stride = sizeof(vertex);
                 pen::renderer_set_vertex_buffer(quad_vertex_buffer, 0, stride, 0);
                 pen::renderer_set_index_buffer(quad_index_buffer, PEN_FORMAT_R16_UINT, 0);
-                
+
                 // bind cuffer
                 pen::renderer_set_constant_buffer(cbuffer_draw, 0, pen::CBUFFER_BIND_VS);
 

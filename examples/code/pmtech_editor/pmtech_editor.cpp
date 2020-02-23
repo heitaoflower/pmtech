@@ -25,26 +25,36 @@
 using namespace put;
 using namespace put::ecs;
 
-pen::window_creation_params pen_window{
-    1280,           // width
-    720,            // height
-    4,              // MSAA samples
-    "pmtech editor" // window title / process name
-};
+void* pen::user_entry(void* params);
+
+namespace pen
+{
+    pen_creation_params pen_entry(int argc, char** argv)
+    {
+        pen::pen_creation_params p;
+        p.window_width = 1280;
+        p.window_height = 720;
+        p.window_title = "pmtech_editor";
+        p.window_sample_count = 4;
+        p.user_thread_function = user_entry;
+        p.flags = pen::e_pen_create_flags::renderer;
+        return p;
+    }
+} // namespace pen
 
 namespace physics
 {
-    extern PEN_TRV physics_thread_main(void* params);
+    extern void* physics_thread_main(void* params);
 }
 
-PEN_TRV pen::user_entry(void* params)
+void* pen::user_entry(void* params)
 {
     // unpack the params passed to the thread and signal to the engine it ok to proceed
     pen::job_thread_params* job_params = (pen::job_thread_params*)params;
     pen::job*               p_thread_info = job_params->job_info;
     pen::semaphore_post(p_thread_info->p_sem_continue, 1);
 
-    pen::jobs_create_job(physics::physics_thread_main, 1024 * 10, nullptr, pen::THREAD_START_DETACHED);
+    pen::jobs_create_job(physics::physics_thread_main, 1024 * 10, nullptr, pen::e_thread_start_flags::detached);
 
     // create the main scene and camera
     put::ecs::ecs_scene* main_scene = put::ecs::create_scene("main_scene");
@@ -82,7 +92,7 @@ PEN_TRV pen::user_entry(void* params)
     svr_area_light_textures.name = "ces_render_area_light_textures";
     svr_area_light_textures.id_name = PEN_HASH(svr_area_light_textures.name.c_str());
     svr_area_light_textures.render_function = &ecs::render_area_light_textures;
-    
+
     put::scene_view_renderer svr_omni_shadow_maps;
     svr_omni_shadow_maps.name = "ces_render_omni_shadow_maps";
     svr_omni_shadow_maps.id_name = PEN_HASH(svr_omni_shadow_maps.name.c_str());

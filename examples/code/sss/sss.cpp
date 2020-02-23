@@ -7,16 +7,24 @@ using namespace put;
 using namespace put::ecs;
 using namespace forward_render;
 
-pen::window_creation_params pen_window{
-    1280, // width
-    720,  // height
-    4,    // MSAA samples
-    "sss" // window title / process name
-};
+namespace pen
+{
+    pen_creation_params pen_entry(int argc, char** argv)
+    {
+        pen::pen_creation_params p;
+        p.window_width = 1280;
+        p.window_height = 720;
+        p.window_title = "sss";
+        p.window_sample_count = 4;
+        p.user_thread_function = user_entry;
+        p.flags = pen::e_pen_create_flags::renderer;
+        return p;
+    }
+} // namespace pen
 
 namespace physics
 {
-    extern PEN_TRV physics_thread_main(void* params);
+    extern void* physics_thread_main(void* params);
 }
 
 void example_setup(ecs_scene* scene, camera& cam)
@@ -31,13 +39,13 @@ void example_setup(ecs_scene* scene, camera& cam)
     scene->id_name[light] = PEN_HASH("front_light");
     scene->lights[light].colour = vec3f::one();
     scene->lights[light].direction = vec3f::one();
-    scene->lights[light].type = LIGHT_TYPE_DIR;
+    scene->lights[light].type = e_light_type::dir;
     scene->lights[light].shadow_map = true;
     scene->transforms[light].translation = vec3f::zero();
     scene->transforms[light].rotation = quat();
     scene->transforms[light].scale = vec3f::one();
-    scene->entities[light] |= CMP_LIGHT;
-    scene->entities[light] |= CMP_TRANSFORM;
+    scene->entities[light] |= e_cmp::light;
+    scene->entities[light] |= e_cmp::transform;
 
     // load head model
     u32 head_model = load_pmm("data/models/head_smooth.pmm", scene) + 1; // node 0 in the model is environment ambient light
@@ -46,7 +54,7 @@ void example_setup(ecs_scene* scene, camera& cam)
     // set character scale and pos
     scene->transforms[head_model].translation = vec3f(0.0f, 0.0f, 0.0f);
     scene->transforms[head_model].scale = vec3f(10.0f);
-    scene->entities[head_model] |= CMP_TRANSFORM;
+    scene->entities[head_model] |= e_cmp::transform;
 
     // set textures
     scene->samplers[head_model].sb[0].handle = put::load_texture("data/textures/head/albedo.dds");

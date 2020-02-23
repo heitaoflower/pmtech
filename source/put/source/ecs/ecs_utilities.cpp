@@ -66,6 +66,28 @@ namespace put
             }
         }
 
+        void write_parsable_string_u32(const Str& str, std::ofstream& ofs)
+        {
+            // writes chars as u32? because some stupid code in the python export
+            if (str.c_str())
+            {
+                u32 l = str.length();
+                ofs.write((const c8*)&l, sizeof(u32));
+                for (u32 c = 0; c < l; ++c)
+                {
+                    ofs.write(&str.c_str()[c], 1);
+                    ofs.write(&str.c_str()[c], 1);
+                    ofs.write(&str.c_str()[c], 1);
+                    ofs.write(&str.c_str()[c], 1);
+                }
+            }
+            else
+            {
+                u32 zero = 0;
+                ofs.write((const c8*)&zero, sizeof(u32));
+            }
+        }
+
         void get_new_entities_append(ecs_scene* scene, s32 num, s32& start, s32& end)
         {
             // o(1) - appends a bunch of nodes on the end
@@ -78,7 +100,7 @@ namespace put
 
             // iterate over nodes flagging allocated
             for (s32 i = start; i < end; ++i)
-                scene->entities[i] |= CMP_ALLOCATED;
+                scene->entities[i] |= e_cmp::allocated;
 
             scene->free_list_head = scene->free_list[end].next;
 
@@ -142,7 +164,7 @@ namespace put
                 fnl_iter = fnl_start;
                 for (s32 i = 0; i < num + 1; ++i)
                 {
-                    scene->entities[fnl_iter->node] |= CMP_ALLOCATED;
+                    scene->entities[fnl_iter->node] |= e_cmp::allocated;
                     scene->free_list_head = fnl_iter;
                     fnl_iter = fnl_iter->next;
                 }
@@ -176,7 +198,7 @@ namespace put
 
             scene->num_entities = std::max<u32>(i + 1, scene->num_entities);
 
-            scene->entities[i] = CMP_ALLOCATED;
+            scene->entities[i] = e_cmp::allocated;
 
             scene->names[i] = "";
             scene->names[i].appendf("entity_%i", i);
@@ -215,7 +237,7 @@ namespace put
             {
                 bool leaf = child.children.size() == 0;
 
-                bool               selected = scene->state_flags[child.entity_index] & SF_SELECTED;
+                bool               selected = scene->state_flags[child.entity_index] & e_state::selected;
                 ImGuiTreeNodeFlags node_flags = selected ? ImGuiTreeNodeFlags_Selected : 0;
 
                 if (leaf)
@@ -252,7 +274,7 @@ namespace put
 
             for (s32 n = start_node; n < scene->num_entities; ++n)
             {
-                if (!(scene->entities[n] & CMP_ALLOCATED))
+                if (!(scene->entities[n] & e_cmp::allocated))
                     continue;
 
                 const c8* node_name = scene->names[n].c_str();
@@ -344,7 +366,7 @@ namespace put
             u32 new_num = scene->num_entities;
             for (u32 n = scene->num_entities - 1; n >= 0; --n)
             {
-                if (scene->entities[n] & CMP_ALLOCATED)
+                if (scene->entities[n] & e_cmp::allocated)
                     break;
 
                 new_num--;
@@ -362,7 +384,7 @@ namespace put
             {
                 u32 i = (*selection_list)[s];
 
-                scene->state_flags[i] &= ~SF_SELECTED;
+                scene->state_flags[i] &= ~e_state::selected;
 
                 if (scene->parents[i] == i || i == 0)
                     parent_list.push_back(i);
@@ -395,8 +417,8 @@ namespace put
                     u32 parent_offset = j_parent - src_parent;
                     u32 parent = dst_parent + parent_offset;
 
-                    u32 new_child =
-                        clone_entity(scene, j, nodes_start + node_counter, parent, CLONE_INSTANTIATE, vec3f::zero(), "");
+                    u32 new_child = clone_entity(scene, j, nodes_start + node_counter, parent, e_clone_mode::instantiate,
+                                                 vec3f::zero(), "");
                     node_counter++;
 
                     if (new_child == parent)
@@ -417,10 +439,10 @@ namespace put
         {
             s32 master = master_node;
 
-            if (scene->entities[master] & CMP_MASTER_INSTANCE)
+            if (scene->entities[master] & e_cmp::master_instance)
                 return;
 
-            scene->entities[master] |= CMP_MASTER_INSTANCE;
+            scene->entities[master] |= e_cmp::master_instance;
 
             scene->master_instances[master].num_instances = num_nodes;
             scene->master_instances[master].instance_stride = sizeof(cmp_draw_call);
@@ -583,7 +605,7 @@ namespace put
             u32 nn = parent;
 
             // instantiate
-            scene->entities[nn] |= CMP_GEOMETRY;
+            scene->entities[nn] |= e_cmp::geometry;
             scene->geometries[nn].vertex_buffer = pen::renderer_create_buffer(vbcp);
             scene->geometries[nn].index_buffer = pen::renderer_create_buffer(ibcp);
             scene->geometries[nn].index_type = index_type;
@@ -596,7 +618,7 @@ namespace put
             scene->transforms[nn].scale = vec3f::one();
             scene->transforms[nn].translation = vec3f::zero();
             scene->transforms[nn].rotation = quat();
-            scene->entities[nn] |= CMP_TRANSFORM;
+            scene->entities[nn] |= e_cmp::transform;
 
             scene->bounding_volumes[nn].min_extents = scene->bounding_volumes[nn].transformed_min_extents;
             scene->bounding_volumes[nn].max_extents = scene->bounding_volumes[nn].transformed_max_extents;
@@ -608,7 +630,7 @@ namespace put
             instantiate_model_cbuffer(scene, nn);
         }
 
-        bool bind_animation_to_rig(ecs_scene* scene, anim_handle anim_handle, u32 node_index)
+        u32 bind_animation_to_rig(ecs_scene* scene, anim_handle anim_handle, u32 node_index)
         {
             animation_resource* anim = get_animation_resource(anim_handle);
             anim_instance       anim_instance;
@@ -676,11 +698,12 @@ namespace put
             u32 num_samplers = sb_count(anim_instance.samplers);
             PEN_ASSERT(num_samplers == anim->num_channels);
 
+            u32 anim_index = sb_count(controller.anim_instances);
             sb_push(controller.anim_instances, anim_instance);
 
             // todo validate
-            scene->entities[node_index] |= CMP_ANIM_CONTROLLER;
-            return true;
+            scene->entities[node_index] |= e_cmp::anim_controller;
+            return anim_index;
         }
     } // namespace ecs
 } // namespace put

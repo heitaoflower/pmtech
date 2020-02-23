@@ -5,13 +5,16 @@
 #pragma once
 
 #include "camera.h"
-#include "data_struct.h"
 #include "loader.h"
-#include "maths/maths.h"
-#include "maths/quat.h"
-#include "pen.h"
 #include "physics/physics.h"
 #include "pmfx.h"
+
+#include "data_struct.h"
+#include "pen.h"
+
+#include "maths/maths.h"
+#include "maths/quat.h"
+
 #include "str/Str.h"
 
 #include <vector>
@@ -25,136 +28,143 @@ namespace put
     {
         struct anim_instance;
         struct ecs_scene;
-                
+
         namespace e_scene_view_flags
         {
             enum sv_flags_t
             {
                 none = 0,
-                hide = 1<<0,
-                hide_debug = 1<<1,
-                node = 1<<2,
-                grid = 1<<3,
-                matrix = 1<<4,
-                bones = 1<<5,
-                aabb = 1<<6,
-                lights = 1<<7,
-                physics = 1<<8,
-                selected_children = 1<<8,
-                camera = 1<<9,
-                geometry = 1<<10,
+                hide = 1 << 0,
+                hide_debug = 1 << 1,
+                node = 1 << 2,
+                grid = 1 << 3,
+                matrix = 1 << 4,
+                bones = 1 << 5,
+                aabb = 1 << 6,
+                lights = 1 << 7,
+                physics = 1 << 8,
+                selected_children = 1 << 8,
+                camera = 1 << 9,
+                geometry = 1 << 10,
                 COUNT = 12,
-                
+
                 defaults = (node | grid)
             };
         }
         typedef u32 scene_view_flags;
-        
+
         namespace e_scene_flags
         {
             enum s_flags_t
             {
                 none = 0,
-                invalidate_scene_tree = 1<<1,
-                pause_update = 1<<2
+                invalidate_scene_tree = 1 << 1,
+                pause_update = 1 << 2
             };
         }
         typedef u32 scene_flags;
 
-        enum e_component_flags : u32
+        namespace e_state
         {
-            CMP_ALLOCATED = (1 << 0),
-            CMP_GEOMETRY = (1 << 1),
-            CMP_PHYSICS = (1 << 2),
-            CMP_PHYSICS_MULTI = (1 << 3),
-            CMP_MATERIAL = (1 << 4),
-            CMP_HAND = (1 << 5),
-            CMP_SKINNED = (1 << 6),
-            CMP_BONE = (1 << 7),
-            CMP_DYNAMIC = (1 << 8),
-            CMP_ANIM_CONTROLLER = (1 << 9),
-            CMP_ANIM_TRAJECTORY = (1 << 10),
-            CMP_LIGHT = (1 << 11),
-            CMP_TRANSFORM = (1 << 12),
-            CMP_CONSTRAINT = (1 << 13),
-            CMP_SUB_INSTANCE = (1 << 14),
-            CMP_MASTER_INSTANCE = (1 << 15),
-            CMP_PRE_SKINNED = (1 << 16),
-            CMP_SUB_GEOMETRY = (1 << 17),
-            CMP_SDF_SHADOW = (1 << 18),
-            CMP_VOLUME = (1 << 19),
-            CMP_SAMPLERS = (1 << 20)
-        };
+            enum state_flags_t
+            {
+                selected = (1 << 0),
+                child_selected = (1 << 1),
+                hidden = (1 << 2),
+                material_initialised = (1 << 3),
+                no_shadow = (1 << 4),
+                samplers_initialised = (1 << 5),
+                apply_anim_transform = (1 << 6),
+                sync_physics_transform = (1 << 7)
+            };
+        }
 
-        enum e_state_flags : u32
-        {
-            SF_SELECTED = (1 << 0),
-            SF_CHILD_SELECTED = (1 << 1),
-            SF_HIDDEN = (1 << 2),
-            SF_MATERIAL_INITIALISED = (1 << 3),
-            SF_NO_SHADOW = (1 << 4),
-            SF_SAMPLERS_INITIALISED = (1 << 5),
-            SF_APPLY_ANIM_TRANSFORM = (1 << 6),
-            SF_SYNC_PHYSICS_TRANSFORM = (1 << 7)
-        };
-
-        enum e_light_types : u32
-        {
-            LIGHT_TYPE_DIR = 0,
-            LIGHT_TYPE_POINT = 1,
-            LIGHT_TYPE_SPOT = 2,
-            LIGHT_TYPE_AREA = 3,
-            LIGHT_TYPE_AREA_EX = 4
-        };
         static const f32 k_dir_light_offset = 1000000.0f;
-
-        enum e_scene_node_textures
+        namespace e_light_type
         {
-            SN_ALBEDO_MAP = 0,
-            SN_NORMAL_MAP,
-            SN_SPECULAR_MAP,
-            SN_ENV_MAP,
-            SN_VOLUME_TEXTURE,
-            SN_EMISSIVE_MAP,
+            enum light_type_t
+            {
+                dir,
+                point,
+                spot,
+                area,
+                area_ex
+            };
+        }
 
-            SN_NUM_TEXTURES
-        };
-
-        enum e_scene_node_cb
+        namespace e_texture
         {
-            SN_CB1,
-            SN_CB2,
-            SN_CB3,
+            enum texture_t
+            {
+                albedo = 0,
+                normal_map,
+                specular_map,
+                env_map,
+                volume,
+                emissive_map,
+                COUNT
+            };
+        }
 
-            SN_NUM_CB
-        };
-
-        enum e_scene_global_textures
+        namespace e_global_textures
         {
-            SHADOW_MAP_UNIT = 15,
-            SDF_SHADOW_UNIT = 14
-        };
+            enum global_textures_t
+            {
+                shadow_map = 15,
+                sdf_shadow = 14,
+                omni_shadow_map = 13
+            };
+        }
 
-        enum e_physics_type
+        namespace e_physics_type
         {
-            PHYSICS_TYPE_RIGID_BODY = 0,
-            PHYSICS_TYPE_CONSTRAINT,
-            PHYSICS_TYPE_COMPOUND_CHILD
-        };
+            enum physics_type_t
+            {
+                rigid_body,
+                constraint,
+                compound_child
+            };
+        }
 
-        enum e_scene_limits
+        namespace e_scene_limits
         {
-            MAX_FORWARD_LIGHTS = 100,
-            MAX_AREA_LIGHTS = 10,
-            MAX_SHADOW_MAPS = 100,
-            MAX_SDF_SHADOWS = 1
-        };
+            enum scene_limits_t
+            {
+                max_forward_lights = 100,
+                max_area_lights = 10,
+                max_shadow_maps = 100,
+                max_sdf_shadows = 1,
+                max_omni_shadow_maps = 100
+            };
+        }
 
-        enum e_scene_render_flags
+        namespace e_cmp
         {
-            RENDER_FORWARD_LIT = 1,
-            RENDER_DEFERRED_LIT = 1 << 1
-        };
+            enum cmp_t
+            {
+                allocated = (1 << 0),
+                geometry = (1 << 1),
+                physics = (1 << 2),
+                physics_multi = (1 << 3),
+                material = (1 << 4),
+                // 1<<5 unused
+                skinned = (1 << 6),
+                bone = (1 << 7),
+                dynamic = (1 << 8),
+                anim_controller = (1 << 9),
+                anim_trajectory = (1 << 10),
+                light = (1 << 11),
+                transform = (1 << 12),
+                constraint = (1 << 13),
+                sub_instance = (1 << 14),
+                master_instance = (1 << 15),
+                pre_skinned = (1 << 16),
+                sub_geometry = (1 << 17),
+                sdf_shadow = (1 << 18),
+                volume = (1 << 19),
+                samplers = (1 << 20)
+            };
+        }
 
         struct cmp_draw_call
         {
@@ -182,8 +192,8 @@ namespace put
             f32     data[64];
             hash_id id_shader = 0;
             hash_id id_technique = 0;
-            hash_id id_sampler_state[SN_NUM_TEXTURES] = {0};
-            s32     texture_handles[SN_NUM_TEXTURES] = {0};
+            hash_id id_sampler_state[e_texture::COUNT] = {0};
+            s32     texture_handles[e_texture::COUNT] = {0};
         };
 
         // contains baked handles for o(1) time setting of technique / shader
@@ -262,23 +272,6 @@ namespace put
             u32 instance_stride;
         };
 
-        struct cmp_anim_controller
-        {
-            enum e_play_flags : u8
-            {
-                STOPPED = 0,
-                PLAY = 1
-            };
-
-            anim_handle* handles = nullptr;
-            s32          joints_offset;
-            anim_handle  current_animation;
-            f32          current_time;
-            s32          current_frame = -1;
-            u8           play_flags = STOPPED;
-            bool         apply_root_motion = true;
-        };
-
         struct anim_blend
         {
             u32 anim_a = 0;
@@ -292,6 +285,7 @@ namespace put
             u32*           joint_indices = nullptr; // indices into the scene hierarchy
             u8*            joint_flags = nullptr;
             anim_blend     blend;
+            u32            joints_offset;
         };
 
         struct cmp_light
@@ -347,7 +341,7 @@ namespace put
         struct forward_light_buffer
         {
             vec4f      info;
-            light_data lights[MAX_FORWARD_LIGHTS];
+            light_data lights[e_scene_limits::max_forward_lights];
         };
 
         struct distance_field_shadow
@@ -370,7 +364,7 @@ namespace put
         struct area_light_buffer
         {
             vec4f      info;
-            area_light lights[MAX_AREA_LIGHTS];
+            area_light lights[e_scene_limits::max_area_lights];
         };
 
         struct free_node_list
@@ -457,7 +451,7 @@ namespace put
             cmp_array<cmp_geometry>           geometries;
             cmp_array<cmp_pre_skin>           pre_skin;
             cmp_array<cmp_physics>            physics_data;
-            cmp_array<cmp_anim_controller>    anim_controller;
+            cmp_array<u32>                    _unused; // removed anim controller
             cmp_array<u32>                    cbuffer;
             cmp_array<cmp_draw_call>          draw_call_data;
             cmp_array<free_node_list>         free_list;
@@ -483,20 +477,20 @@ namespace put
             ecs_controller* controllers = nullptr;
 
             // Scene Data
-            u32                 num_entities = 0;
-            u32                 soa_size = 0;
-            free_node_list*     free_list_head = nullptr;
-            u32                 forward_light_buffer = PEN_INVALID_HANDLE;
-            u32                 sdf_shadow_buffer = PEN_INVALID_HANDLE;
-            u32                 area_light_buffer = PEN_INVALID_HANDLE;
-            u32                 shadow_map_buffer = PEN_INVALID_HANDLE;
-            s32                 selected_index = -1;
-            scene_flags         flags = 0;
-            scene_view_flags    view_flags = 0;
-            extents             renderable_extents;
-            u32*                selection_list = nullptr;
-            u32                 version = k_version;
-            Str                 filename = "";
+            size_t           num_entities = 0;
+            u32              soa_size = 0;
+            free_node_list*  free_list_head = nullptr;
+            u32              forward_light_buffer = PEN_INVALID_HANDLE;
+            u32              sdf_shadow_buffer = PEN_INVALID_HANDLE;
+            u32              area_light_buffer = PEN_INVALID_HANDLE;
+            u32              shadow_map_buffer = PEN_INVALID_HANDLE;
+            s32              selected_index = -1;
+            scene_flags      flags = 0;
+            scene_view_flags view_flags = 0;
+            extents          renderable_extents;
+            u32*             selection_list = nullptr;
+            u32              version = k_version;
+            Str              filename = "";
 
             generic_cmp_array& get_component_array(u32 index);
         };

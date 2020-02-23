@@ -9,12 +9,20 @@
 #include "threads.h"
 #include "timer.h"
 
-pen::window_creation_params pen_window{
-    1280,        // width
-    720,         // height
-    4,           // MSAA samples
-    "play_sound" // window title / process name
-};
+namespace pen
+{
+    pen_creation_params pen_entry(int argc, char** argv)
+    {
+        pen::pen_creation_params p;
+        p.window_width = 1280;
+        p.window_height = 720;
+        p.window_title = "play_sound";
+        p.window_sample_count = 4;
+        p.user_thread_function = user_entry;
+        p.flags = pen::e_pen_create_flags::renderer;
+        return p;
+    }
+} // namespace pen
 
 u32 clear_state_grey;
 u32 raster_state_cull_back;
@@ -43,14 +51,14 @@ void renderer_state_init()
     raster_state_cull_back = pen::renderer_create_rasterizer_state(rcp);
 }
 
-PEN_TRV pen::user_entry(void* params)
+void* pen::user_entry(void* params)
 {
     // unpack the params passed to the thread and signal to the engine it ok to proceed
     pen::job_thread_params* job_params = (pen::job_thread_params*)params;
     pen::job*               p_thread_info = job_params->job_info;
     pen::semaphore_post(p_thread_info->p_sem_continue, 1);
 
-    pen::jobs_create_job(put::audio_thread_function, 1024 * 10, nullptr, pen::THREAD_START_DETACHED);
+    pen::jobs_create_job(put::audio_thread_function, 1024 * 10, nullptr, pen::e_thread_start_flags::detached);
 
     renderer_state_init();
 

@@ -11,12 +11,20 @@
 
 using namespace put;
 
-pen::window_creation_params pen_window{
-    1280,           // width
-    720,            // height
-    4,              // MSAA samples
-    "texture_array" // window title / process name
-};
+namespace pen
+{
+    pen_creation_params pen_entry(int argc, char** argv)
+    {
+        pen::pen_creation_params p;
+        p.window_width = 1280;
+        p.window_height = 720;
+        p.window_title = "texture_array";
+        p.window_sample_count = 4;
+        p.user_thread_function = user_entry;
+        p.flags = pen::e_pen_create_flags::renderer;
+        return p;
+    }
+} // namespace pen
 
 struct vertex
 {
@@ -29,7 +37,7 @@ struct textured_vertex
     float u, v;
 };
 
-PEN_TRV pen::user_entry(void* params)
+void* pen::user_entry(void* params)
 {
     // unpack the params passed to the thread and signal to the engine it ok to proceed
     pen::job_thread_params* job_params = (pen::job_thread_params*)params;
@@ -60,14 +68,14 @@ PEN_TRV pen::user_entry(void* params)
 
     // load texture array
     u32 texture_array = put::load_texture("data/textures/zombie.dds");
-        
+
     // get frame / slice count from texture info
     texture_info ti;
     put::get_texture_info(texture_array, ti);
     f32 num_frames = ti.num_arrays;
 
     // manually scale 16:9 to 1:1
-    f32 x_size = 0.5f / ((f32)pen_window.width / pen_window.height);
+    f32 x_size = 0.5f / pen::window_get_aspect();
 
     f32 uv_y_a = 1.0f;
     f32 uv_y_b = 0.0f;
@@ -120,40 +128,40 @@ PEN_TRV pen::user_entry(void* params)
     scp.max_lod = 4.0f;
 
     u32 linear_sampler = pen::renderer_create_sampler(scp);
-    
+
     // cbuffer to set the array slice
-    f32 time[4] = { 0 };
+    f32 time[4] = {0};
     bcp.usage_flags = PEN_USAGE_DYNAMIC;
     bcp.bind_flags = PEN_BIND_CONSTANT_BUFFER;
     bcp.cpu_access_flags = PEN_CPU_ACCESS_WRITE;
     bcp.buffer_size = sizeof(time);
     bcp.data = &time[0];
-    
+
     u32 cbuffer = pen::renderer_create_buffer(bcp);
-    
-    f32 ft = 0.0f;
+
+    f32         ft = 0.0f;
     pen::timer* t = pen::timer_create();
     pen::timer_start(t);
-    
+
     while (1)
     {
         pen::renderer_set_rasterizer_state(raster_state);
-        
+
         ft += pen::timer_elapsed_ms(t);
         pen::timer_start(t);
-        
+
         f32 ms_frame = 100.0f;
-        if(ft > ms_frame)
+        if (ft > ms_frame)
         {
             time[0] += 1.0f;
-            if(time[0] >= num_frames)
+            if (time[0] >= num_frames)
                 time[0] = 0.0f;
-            
+
             ft -= ms_frame;
         }
-        
+
         pen::renderer_update_buffer(cbuffer, (void*)&time[0], sizeof(time));
-        
+
         // bind back buffer and clear
         pen::renderer_set_viewport(vp);
         pen::renderer_set_scissor_rect(rect{vp.x, vp.y, vp.width, vp.height});

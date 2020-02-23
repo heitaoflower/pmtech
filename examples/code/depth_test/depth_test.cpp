@@ -8,12 +8,21 @@
 #include "threads.h"
 #include "timer.h"
 
-pen::window_creation_params pen_window{
-    1280,            // width
-    720,             // height
-    4,               // MSAA samples
-    "depth_test"     // window title / process name
-};
+void* pen::user_entry(void* params);
+namespace pen
+{
+    pen_creation_params pen_entry(int argc, char** argv)
+    {
+        pen::pen_creation_params p;
+        p.window_width = 1280;
+        p.window_height = 720;
+        p.window_title = "depth_test";
+        p.window_sample_count = 4;
+        p.user_thread_function = user_entry;
+        p.flags = pen::e_pen_create_flags::renderer;
+        return p;
+    }
+} // namespace pen
 
 struct vertex
 {
@@ -26,7 +35,7 @@ bool test()
     return true;
 }
 
-PEN_TRV pen::user_entry(void* params)
+void* pen::user_entry(void* params)
 {
     // unpack the params passed to the thread and signal to the engine it ok to proceed
     pen::job_thread_params* job_params = (pen::job_thread_params*)params;
@@ -35,8 +44,7 @@ PEN_TRV pen::user_entry(void* params)
 
     // create clear state
     static pen::clear_state cs = {
-        214.0f / 255.0f, 219.0f / 255.0f, 178.0f / 255.0f, 1.0f, 1.0f, 0x00, 
-        PEN_CLEAR_COLOUR_BUFFER | PEN_CLEAR_DEPTH_BUFFER,
+        214.0f / 255.0f, 219.0f / 255.0f, 178.0f / 255.0f, 1.0f, 1.0f, 0x00, PEN_CLEAR_COLOUR_BUFFER | PEN_CLEAR_DEPTH_BUFFER,
     };
 
     u32 clear_state = pen::renderer_create_clear_state(cs);
@@ -111,14 +119,8 @@ PEN_TRV pen::user_entry(void* params)
     bcp.cpu_access_flags = 0;
 
     // gold trialngle
-    vertex vertices_gold[] = {
-        0.0f, 0.3f, 0.5f, 1.0f,
-        0.8f, 0.7f, 0.07f, 1.0f,
-        0.3f, -0.3f, 0.5f, 1.0f,
-        0.8f, 0.7f, 0.07f, 1.0f,
-        -0.3f, -0.3f, 0.5f, 1.0f,
-        0.8f, 0.7f, 0.07f, 1.0f
-    };
+    vertex vertices_gold[] = {0.0f, 0.3f, 0.5f,  1.0f, 0.8f,  0.7f,  0.07f, 1.0f, 0.3f, -0.3f, 0.5f,  1.0f,
+                              0.8f, 0.7f, 0.07f, 1.0f, -0.3f, -0.3f, 0.5f,  1.0f, 0.8f, 0.7f,  0.07f, 1.0f};
 
     bcp.buffer_size = sizeof(vertex) * 3;
     bcp.data = (void*)&vertices_gold[0];
@@ -126,14 +128,8 @@ PEN_TRV pen::user_entry(void* params)
     u32 vertex_buffer_gold = pen::renderer_create_buffer(bcp);
 
     // teal triangle
-    vertex vertices_teal[] = { 
-        0.0f, 0.7f, 0.7f, 1.0f, 
-        0.0f, 0.5f, 0.5f, 1.0f,
-        0.7f, -0.7f, 0.7f, 1.0f, 
-        0.0f, 0.5f, 0.5f, 1.0f,
-        -0.7f, -0.7f, 0.7f, 1.0f,
-        0.0f, 0.5f, 0.5f, 1.0f
-    };
+    vertex vertices_teal[] = {0.0f, 0.7f, 0.7f, 1.0f, 0.0f,  0.5f,  0.5f, 1.0f, 0.7f, -0.7f, 0.7f, 1.0f,
+                              0.0f, 0.5f, 0.5f, 1.0f, -0.7f, -0.7f, 0.7f, 1.0f, 0.0f, 0.5f,  0.5f, 1.0f};
 
     bcp.buffer_size = sizeof(vertex) * 3;
     bcp.data = (void*)&vertices_teal[0];
@@ -157,7 +153,7 @@ PEN_TRV pen::user_entry(void* params)
         pen::renderer_set_targets(PEN_BACK_BUFFER_COLOUR, PEN_BACK_BUFFER_DEPTH);
 
         // clear screen
-        pen::viewport vp = {0.0f, 0.0f, (f32)pen_window.width, (f32)pen_window.height, 0.0f, 1.0f};
+        pen::viewport vp = {0.0f, 0.0f, PEN_BACK_BUFFER_RATIO, 1.0f, 0.0f, 1.0f};
 
         pen::renderer_set_viewport(vp);
         pen::renderer_set_rasterizer_state(raster_state);
@@ -175,7 +171,7 @@ PEN_TRV pen::user_entry(void* params)
         pen::renderer_set_shader(pixel_shader, PEN_SHADER_TYPE_PS);
 
         // draw 2 triangles in order opposite to their depth to show depth testing is working.
-        // we should see a gold triangle on top of teal 
+        // we should see a gold triangle on top of teal
 
         // gold
         pen::renderer_set_vertex_buffer(vertex_buffer_gold, 0, stride, 0);

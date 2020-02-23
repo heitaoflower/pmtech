@@ -9,12 +9,20 @@
 #include "threads.h"
 #include "timer.h"
 
-pen::window_creation_params pen_window{
-    1280,   // width
-    720,    // height
-    4,      // MSAA samples
-    "imgui" // window title / process name
-};
+namespace pen
+{
+    pen_creation_params pen_entry(int argc, char** argv)
+    {
+        pen::pen_creation_params p;
+        p.window_width = 1280;
+        p.window_height = 720;
+        p.window_title = "imgui_example";
+        p.window_sample_count = 4;
+        p.user_thread_function = user_entry;
+        p.flags = pen::e_pen_create_flags::renderer;
+        return p;
+    }
+} // namespace pen
 
 u32 clear_state_grey;
 u32 raster_state_cull_back;
@@ -51,7 +59,7 @@ void renderer_state_init()
     default_depth_stencil_state = pen::renderer_create_depth_stencil_state(depth_stencil_params);
 }
 
-PEN_TRV pen::user_entry(void* params)
+void* pen::user_entry(void* params)
 {
     // unpack the params passed to the thread and signal to the engine it ok to proceed
     pen::job_thread_params* job_params = (pen::job_thread_params*)params;
@@ -65,19 +73,19 @@ PEN_TRV pen::user_entry(void* params)
     while (1)
     {
         pen::renderer_set_targets(PEN_BACK_BUFFER_COLOUR, PEN_BACK_BUFFER_DEPTH);
-        pen::viewport vp = {0.0f, 0.0f, (f32)pen_window.width, (f32)pen_window.height, 0.0f, 1.0f};
+        pen::viewport vp = {0.0f, 0.0f, PEN_BACK_BUFFER_RATIO, 1.0f, 0.0f, 1.0f};
         pen::renderer_set_viewport(vp);
         pen::renderer_set_scissor_rect(rect{vp.x, vp.y, vp.width, vp.height});
         pen::renderer_clear(clear_state_grey);
         pen::renderer_set_rasterizer_state(raster_state_cull_back);
         pen::renderer_set_depth_stencil_state(default_depth_stencil_state);
-        
+
         put::dev_ui::new_frame();
 
         ImGui::Text("Hello World");
 
         static f32 renderer_time = 0.0f;
-        
+
         static bool show_test_window = true;
         static bool show_another_window = false;
         ImVec4      clear_col = ImColor(114, 144, 154);

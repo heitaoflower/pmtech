@@ -6,12 +6,20 @@ using namespace put;
 using namespace put::ecs;
 using namespace forward_render;
 
-pen::window_creation_params pen_window{
-    1280,         // width
-    720,          // height
-    4,            // MSAA samples
-    "area_lights" // window title / process name
-};
+namespace pen
+{
+    pen_creation_params pen_entry(int argc, char** argv)
+    {
+        pen::pen_creation_params p;
+        p.window_width = 1280;
+        p.window_height = 720;
+        p.window_title = "area_lights";
+        p.window_sample_count = 4;
+        p.user_thread_function = user_entry;
+        p.flags = pen::e_pen_create_flags::renderer;
+        return p;
+    }
+} // namespace pen
 
 void example_setup(ecs::ecs_scene* scene, camera& cam)
 {
@@ -22,7 +30,7 @@ void example_setup(ecs::ecs_scene* scene, camera& cam)
     scene->transforms[model].scale = vec3f(0.07f);
     scene->transforms[model].rotation = quat(0.0f, -M_PI / 4.0f, 0.0f);
     scene->transforms[model].translation = vec3f(0.0f, -0.35f, 0.0f);
-    scene->entities[model] |= CMP_TRANSFORM;
+    scene->entities[model] |= e_cmp::transform;
 
     // ground
     material_resource* default_material = get_material_resource(PEN_HASH("default_material"));
@@ -33,7 +41,7 @@ void example_setup(ecs::ecs_scene* scene, camera& cam)
     scene->transforms[ground].rotation = quat();
     scene->transforms[ground].scale = vec3f(60.0f);
     scene->transforms[ground].translation = vec3f::zero();
-    scene->entities[ground] |= CMP_TRANSFORM;
+    scene->entities[ground] |= e_cmp::transform;
     scene->parents[ground] = ground;
     scene->material_permutation[ground] |= FORWARD_LIT_UV_SCALE;
 
@@ -77,7 +85,7 @@ void example_setup(ecs::ecs_scene* scene, camera& cam)
         scene->transforms[al].rotation = al_rots[i];
         scene->transforms[al].scale = al_scales[i];
         scene->transforms[al].translation = al_trans[i];
-        scene->entities[al] |= CMP_TRANSFORM;
+        scene->entities[al] |= e_cmp::transform;
         scene->parents[al] = al;
 
         instantiate_area_light_ex(scene, al, alrs[i]);

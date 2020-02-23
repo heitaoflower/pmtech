@@ -2,9 +2,9 @@
 // Copyright 2014 - 2019 Alex Dixon.
 // License: https://github.com/polymonster/pmtech/blob/master/license.md
 
-#pragma once
-
 // Wrapper around assert and print for portability, to control and re-direct in the future if required
+
+#pragma once
 
 #include "types.h"
 
@@ -25,10 +25,11 @@ inline void output_debug(const c8* format, ...)
     static u32 s_buffer_size = 1024 * 1024;
     static c8* buf = new c8[s_buffer_size];
 
+    // adding 2 to stick \n\0 on windows
     u32 n = vsnprintf(buf, s_buffer_size, format, va);
     va_end(va);
 
-    if (n > s_buffer_size)
+    if (n + 2 > s_buffer_size)
     {
         va_start(va, format);
 
@@ -44,6 +45,8 @@ inline void output_debug(const c8* format, ...)
     va_end(va);
 
 #ifdef _WIN32
+    buf[n] = '\n';
+    buf[n + 1] = '\0';
     OutputDebugStringA(buf);
 #else
     printf("%s\n", buf);

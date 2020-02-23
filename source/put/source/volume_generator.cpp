@@ -272,7 +272,7 @@ namespace put
             current_slice++;
         }
 
-        PEN_TRV raster_voxel_combine(void* params)
+        void* raster_voxel_combine(void* params)
         {
             pen::job_thread_params* job_params = (pen::job_thread_params*)params;
             vgt_rasteriser_job*     rasteriser_job = (vgt_rasteriser_job*)job_params->user_data;
@@ -937,7 +937,8 @@ namespace put
             if (s_rasteriser_job.combine_in_progress == 0)
             {
                 s_rasteriser_job.combine_in_progress = 1;
-                pen::jobs_create_job(raster_voxel_combine, 1024 * 1024 * 1024, &s_rasteriser_job, pen::THREAD_START_DETACHED);
+                pen::jobs_create_job(raster_voxel_combine, 1024 * 1024 * 1024, &s_rasteriser_job,
+                                     pen::e_thread_start_flags::detached);
                 return;
             }
             else
@@ -970,10 +971,10 @@ namespace put
             scene->transforms[new_prim].rotation = quat();
             scene->transforms[new_prim].scale = scale;
             scene->transforms[new_prim].translation = pos;
-            scene->entities[new_prim] |= CMP_TRANSFORM | CMP_VOLUME;
+            scene->entities[new_prim] |= e_cmp::transform | e_cmp::volume;
             scene->parents[new_prim] = new_prim;
             scene->samplers[new_prim].sb[0].handle = gv.texture;
-            scene->samplers[new_prim].sb[0].sampler_unit = SN_VOLUME_TEXTURE;
+            scene->samplers[new_prim].sb[0].sampler_unit = e_texture::volume;
             scene->samplers[new_prim].sb[0].sampler_state =
                 pmfx::get_render_state(PEN_HASH("clamp_linear"), pmfx::e_render_state::sampler);
 
@@ -1100,7 +1101,7 @@ namespace put
             current_requested_slice = current_slice;
         }
 
-        PEN_TRV sdf_generate(void* params)
+        void* sdf_generate(void* params)
         {
             pen::job_thread_params* job_params = (pen::job_thread_params*)params;
             vgt_sdf_job*            sdf_job = (vgt_sdf_job*)job_params->user_data;
@@ -1127,12 +1128,12 @@ namespace put
 
             for (u32 n = 0; n < sdf_job->scene->soa_size; ++n)
             {
-                if (sdf_job->scene->entities[n] & CMP_GEOMETRY)
+                if (sdf_job->scene->entities[n] & e_cmp::geometry)
                 {
                     if (s_sdf_job.capture_type == CAPTURE_SELECTED)
                     {
-                        if (!(sdf_job->scene->state_flags[n] & SF_SELECTED) &&
-                            !(sdf_job->scene->state_flags[n] & SF_CHILD_SELECTED))
+                        if (!(sdf_job->scene->state_flags[n] & e_state::selected) &&
+                            !(sdf_job->scene->state_flags[n] & e_state::child_selected))
                             continue;
 
                         ve.min = min_union(ve.min, sdf_job->scene->bounding_volumes[n].transformed_min_extents);
@@ -1307,13 +1308,13 @@ namespace put
 
                         for (u32 n = 0; n < s_main_scene->num_entities; ++n)
                         {
-                            if (s_main_scene->state_flags[n] & SF_HIDDEN)
+                            if (s_main_scene->state_flags[n] & e_state::hidden)
                                 continue;
 
-                            if (!(s_main_scene->state_flags[n] & SF_SELECTED) &&
-                                !(s_main_scene->state_flags[n] & SF_CHILD_SELECTED))
+                            if (!(s_main_scene->state_flags[n] & e_state::selected) &&
+                                !(s_main_scene->state_flags[n] & e_state::child_selected))
                             {
-                                s_main_scene->state_flags[n] |= SF_HIDDEN;
+                                s_main_scene->state_flags[n] |= e_state::hidden;
                                 sb_push(hidden_entities, n);
                             }
                             else
@@ -1375,7 +1376,7 @@ namespace put
                         for (u32 i = 0; i < c; ++i)
                         {
                             u32 n = hidden_entities[i];
-                            s_main_scene->state_flags[n] &= ~SF_HIDDEN;
+                            s_main_scene->state_flags[n] &= ~e_state::hidden;
                         }
 
                         sb_clear(hidden_entities);
@@ -1442,7 +1443,7 @@ namespace put
                     s_sdf_job.scene = s_main_scene;
                     s_sdf_job.options = s_options;
 
-                    pen::jobs_create_job(sdf_generate, 1024 * 1024 * 1024, &s_sdf_job, pen::THREAD_START_DETACHED);
+                    pen::jobs_create_job(sdf_generate, 1024 * 1024 * 1024, &s_sdf_job, pen::e_thread_start_flags::detached);
                     return;
                 }
 
@@ -1487,9 +1488,9 @@ namespace put
                     s_main_scene->transforms[new_prim].rotation = quat();
                     s_main_scene->transforms[new_prim].scale = scale;
                     s_main_scene->transforms[new_prim].translation = pos;
-                    s_main_scene->entities[new_prim] |= CMP_TRANSFORM | CMP_SDF_SHADOW;
+                    s_main_scene->entities[new_prim] |= e_cmp::transform | e_cmp::sdf_shadow;
                     s_main_scene->parents[new_prim] = new_prim;
-                    s_main_scene->samplers[new_prim].sb[0].sampler_unit = SN_VOLUME_TEXTURE;
+                    s_main_scene->samplers[new_prim].sb[0].sampler_unit = e_texture::volume;
                     s_main_scene->samplers[new_prim].sb[0].handle = gv.texture;
                     s_main_scene->samplers[new_prim].sb[0].sampler_state = ss;
                     s_main_scene->shadows[new_prim].texture_handle = gv.texture;
@@ -1582,7 +1583,7 @@ namespace put
                 // Volumes Generated
                 bool has_volumes = false;
                 for (u32 n = 0; n < s_main_scene->num_entities; ++n)
-                    if (s_main_scene->entities[n] & (CMP_SDF_SHADOW | CMP_VOLUME))
+                    if (s_main_scene->entities[n] & (e_cmp::sdf_shadow | e_cmp::volume))
                         has_volumes = true;
 
                 if (has_volumes)
@@ -1601,7 +1602,7 @@ namespace put
 
                     for (u32 n = 0; n < s_main_scene->num_entities; ++n)
                     {
-                        if (!(s_main_scene->entities[n] & (CMP_SDF_SHADOW | CMP_VOLUME)))
+                        if (!(s_main_scene->entities[n] & (e_cmp::sdf_shadow | e_cmp::volume)))
                             continue;
 
                         if (ImGui::Selectable(s_main_scene->names[n].c_str()))
@@ -1609,7 +1610,7 @@ namespace put
 
                         ImGui::NextColumn();
 
-                        if ((s_main_scene->entities[n] & CMP_SDF_SHADOW))
+                        if ((s_main_scene->entities[n] & e_cmp::sdf_shadow))
                             ImGui::Text("Signed Distance Field");
                         else
                             ImGui::Text("Volume Texture");
@@ -1654,7 +1655,7 @@ namespace put
                                     Str json_file = basename;
                                     json_file.appendf(".pmv");
 
-                                    bool      sdf = s_main_scene->entities[save_index] & CMP_SDF_SHADOW;
+                                    bool      sdf = s_main_scene->entities[save_index] & e_cmp::sdf_shadow;
                                     const c8* vol_name = sdf ? "signed_distance_field" : "volume_texture";
 
                                     pen::json j;

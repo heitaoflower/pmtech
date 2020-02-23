@@ -5,12 +5,20 @@
 using namespace put;
 using namespace put::ecs;
 
-pen::window_creation_params pen_window{
-    1280,              // width
-    720,               // height
-    4,                 // MSAA samples
-    "rasterizer_state" // window title / process name
-};
+namespace pen
+{
+    pen_creation_params pen_entry(int argc, char** argv)
+    {
+        pen::pen_creation_params p;
+        p.window_width = 1280;
+        p.window_height = 720;
+        p.window_title = "rasterizer_state";
+        p.window_sample_count = 4;
+        p.user_thread_function = user_entry;
+        p.flags = pen::e_pen_create_flags::renderer;
+        return p;
+    }
+} // namespace pen
 
 namespace
 {
@@ -47,6 +55,22 @@ void render_raster_states(const scene_view& view)
                                       pen::TEXTURE_BIND_PS);
         }
 
+        // ltc lookups / shadow buffers
+        {
+            static u32 ltc_mat = put::load_texture("data/textures/ltc/ltc_mat.dds");
+            static u32 ltc_mag = put::load_texture("data/textures/ltc/ltc_amp.dds");
+
+            static hash_id id_clamp_linear = PEN_HASH("clamp_linear");
+            u32            clamp_linear = pmfx::get_render_state(id_clamp_linear, pmfx::e_render_state::sampler);
+
+            pen::renderer_set_texture(ltc_mat, clamp_linear, 13, pen::TEXTURE_BIND_PS);
+            pen::renderer_set_texture(ltc_mag, clamp_linear, 12, pen::TEXTURE_BIND_PS);
+
+            pen::renderer_set_constant_buffer(scene->forward_light_buffer, 3, pen::CBUFFER_BIND_PS);
+            pen::renderer_set_constant_buffer(scene->shadow_map_buffer, 4, pen::CBUFFER_BIND_PS);
+            pen::renderer_set_constant_buffer(scene->area_light_buffer, 6, pen::CBUFFER_BIND_PS);
+        }
+
         pen::renderer_set_constant_buffer(scene->forward_light_buffer, 3, pen::CBUFFER_BIND_PS);
         pen::renderer_set_vertex_buffer(geom.vertex_buffer, 0, geom.vertex_size, 0);
         pen::renderer_set_index_buffer(geom.index_buffer, geom.index_type, 0);
@@ -81,12 +105,12 @@ void example_setup(ecs::ecs_scene* scene, camera& cam)
     scene->id_name[light] = PEN_HASH("front_light");
     scene->lights[light].colour = vec3f::one();
     scene->lights[light].direction = vec3f::one();
-    scene->lights[light].type = LIGHT_TYPE_DIR;
+    scene->lights[light].type = e_light_type::dir;
     scene->transforms[light].translation = vec3f::zero();
     scene->transforms[light].rotation = quat();
     scene->transforms[light].scale = vec3f::one();
-    scene->entities[light] |= CMP_LIGHT;
-    scene->entities[light] |= CMP_TRANSFORM;
+    scene->entities[light] |= e_cmp::light;
+    scene->entities[light] |= e_cmp::transform;
 
     // add a few cubes
     vec3f pos = vec3f(-(f32)(num_rs - 1) * 2.0f * 5.0f, 0.0f, 0.0f);
@@ -98,7 +122,7 @@ void example_setup(ecs::ecs_scene* scene, camera& cam)
         scene->transforms[ci].translation = pos;
         scene->transforms[ci].rotation = quat();
         scene->transforms[ci].scale = vec3f(5.0f, 5.0f, 5.0f);
-        scene->entities[ci] |= CMP_TRANSFORM;
+        scene->entities[ci] |= e_cmp::transform;
         scene->parents[ci] = ci;
         instantiate_geometry(box, scene, ci);
         instantiate_material(default_material, scene, ci);

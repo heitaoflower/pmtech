@@ -22,7 +22,7 @@ namespace put
             };
         }
         typedef u32 anim_flags;
-        
+
         namespace e_anim_semantics
         {
             enum anim_semantics_t
@@ -37,7 +37,7 @@ namespace put
             };
         }
         typedef e_anim_semantics::anim_semantics_t anim_semantics;
-        
+
         namespace e_anim_interpolation
         {
             enum anim_interpolation_t
@@ -51,7 +51,7 @@ namespace put
             };
         }
         typedef e_anim_interpolation::anim_interpolation_t anim_interpolation;
-        
+
         namespace e_anim_data
         {
             enum anim_data_t
@@ -62,7 +62,7 @@ namespace put
             };
         }
         typedef e_anim_data::anim_data_t anim_data;
-        
+
         namespace e_anim_target
         {
             enum anim_target_t
@@ -82,7 +82,7 @@ namespace put
                 scale_z
             };
         }
-        
+
         namespace e_anim_output
         {
             enum anim_output_t
@@ -96,19 +96,19 @@ namespace put
                 quaternion = 9
             };
         }
-        
+
         namespace e_pmm_load_flags
         {
             enum pmm_load_flags_t
             {
-                geometry = 1<<0,
-                material = 1<<1,
-                nodes = 1<<2,
+                geometry = 1 << 0,
+                material = 1 << 1,
+                nodes = 1 << 2,
                 all = (geometry | material | nodes)
             };
         }
         typedef u32 pmm_load_flags;
-        
+
         struct anim_info
         {
             f32 time;
@@ -264,6 +264,9 @@ namespace put
         s32 load_pma(const c8* model_scene_name);
         s32 load_pmv(const c8* filename, ecs_scene* scene);
 
+        void optimise_pmm(const c8* input_filename, const c8* output_filename);
+        void optimise_pma(const c8* input_filename, const c8* output_filename);
+
         void instantiate_rigid_body(ecs_scene* scene, u32 node_index);
         void instantiate_compound_rigid_body(ecs_scene* scene, u32 parent, u32* children, u32 num_children);
         void instantiate_constraint(ecs_scene* scene, u32 node_index);
@@ -272,7 +275,7 @@ namespace put
         void instantiate_model_pre_skin(ecs_scene* scene, s32 node_index);
         void instantiate_model_cbuffer(ecs_scene* scene, s32 node_index);
         void instantiate_material_cbuffer(ecs_scene* scene, s32 node_index, s32 size);
-        void instantiate_anim_controller(ecs_scene* scene, s32 node_index);
+        void instantiate_anim_controller_v2(ecs_scene* scene, s32 node_index);
         void instantiate_material(material_resource* mr, ecs_scene* scene, u32 node_index);
         void instantiate_sdf_shadow(const c8* pmv_filename, ecs_scene* scene, u32 node_index);
         void instantiate_light(ecs_scene* scene, u32 node_index);

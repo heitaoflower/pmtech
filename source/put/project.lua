@@ -36,11 +36,12 @@ project "put"
         "../pen/include/" .. platform_dir,
         "../pen/include/" .. renderer_dir,
           
+        "../../third_party",
         "../../third_party/fmod/inc",
         "../../third_party/bullet/src/",
         "../../third_party/imgui",
         "../../third_party/sdf_gen",
-        "../../third_party"
+        "../../third_party/meshoptimizer"
     }
     
     if _ACTION == "vs2017" or _ACTION == "vs2015" then
@@ -59,6 +60,8 @@ project "put"
         "../../third_party/sdf_gen/*.cpp",
         "../../third_party/bussik/*.h",
         "../../third_party/bussik/*.cpp",
+        "../../third_party/meshoptimizer/*.cpp",
+        "../../third_party/meshoptimizer/*.h",
         
         "../../third_party/maths/*.h"
     }

@@ -2,9 +2,6 @@
 // Copyright 2014 - 2019 Alex Dixon.
 // License: https://github.com/polymonster/pmtech/blob/master/license.md
 
-#ifndef _renderer_h
-#define _renderer_h
-
 // Generic rendering api wrapper, with a dedicated dispatch thread.
 // Currently implementations are in:
 //      Direct3D11 (win32)
@@ -17,6 +14,8 @@
 // Dedicated thread will wait on a semaphore until renderer_consume_command_buffer is called
 // command buffer will be consumed passing arguments to the direct:: functions.
 
+#pragma once
+
 #include "pen.h"
 #include "renderer_definitions.h"
 
@@ -25,6 +24,7 @@
 #define PEN_CAPS_DEPTH_CLAMP (1 << 1)
 #define PEN_CAPS_GPU_TIMER (1 << 2)
 #define PEN_CAPS_COMPUTE (1 << 3)
+#define PEN_CAPS_TEXTURE_CUBE_ARRAY (1 << 4)
 
 // Texture format caps
 #define PEN_CAPS_TEX_FORMAT_BC1 (1 << 31)
@@ -34,6 +34,8 @@
 #define PEN_CAPS_TEX_FORMAT_BC5 (1 << 27)
 #define PEN_CAPS_TEX_FORMAT_BC6 (1 << 26)
 #define PEN_CAPS_TEX_FORMAT_BC7 (1 << 25)
+
+#define PEN_BACK_BUFFER_RATIO -1.0f
 
 namespace pen
 {
@@ -359,8 +361,8 @@ namespace pen
     };
 
     //
-
-    PEN_TRV              renderer_thread_function(void* params);
+    void                 renderer_init(void* user_data, bool wait_for_jobs);
+    void*                renderer_thread_function(void* params);
     const c8*            renderer_get_shader_platform();
     bool                 renderer_viewport_vup();
     const renderer_info& renderer_get_info();
@@ -406,6 +408,8 @@ namespace pen
     void renderer_set_rasterizer_state(u32 rasterizer_state_index);
     void renderer_set_viewport(const viewport& vp);
     void renderer_set_scissor_rect(const rect& r);
+    void renderer_set_viewport_ratio(const viewport& vp);
+    void renderer_set_scissor_rect_ratio(const rect& r);
 
     // blending
     u32  renderer_create_blend_state(const blend_creation_params& bcp);
@@ -465,7 +469,7 @@ namespace pen
         // Platform specific implementation, implements these function
         u32  renderer_initialise(void* params, u32 bb_res, u32 bb_depth_res);
         void renderer_shutdown();
-        
+
         // functions to syncronise the render and main threads
         void renderer_sync();
         void renderer_new_frame();
@@ -593,5 +597,3 @@ namespace pen
     }
 
 } // namespace pen
-
-#endif

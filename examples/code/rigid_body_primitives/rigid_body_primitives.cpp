@@ -3,18 +3,26 @@
 using namespace put;
 using namespace ecs;
 
-pen::window_creation_params pen_window{
-    1280,                   // width
-    720,                    // height
-    4,                      // MSAA samples
-    "rigid_body_primitives" // window title / process name
-};
+namespace pen
+{
+    pen_creation_params pen_entry(int argc, char** argv)
+    {
+        pen::pen_creation_params p;
+        p.window_width = 1280;
+        p.window_height = 720;
+        p.window_title = "rigid_body_primitives";
+        p.window_sample_count = 4;
+        p.user_thread_function = user_entry;
+        p.flags = pen::e_pen_create_flags::renderer;
+        return p;
+    }
+} // namespace pen
 
 void example_setup(ecs_scene* scene, camera& cam)
 {
     scene->view_flags &= ~e_scene_view_flags::hide_debug;
     editor_set_transform_mode(e_transform_mode::physics);
-    
+
     clear_scene(scene);
 
     material_resource* default_material = get_material_resource(PEN_HASH("default_material"));
@@ -31,12 +39,12 @@ void example_setup(ecs_scene* scene, camera& cam)
     scene->id_name[light] = PEN_HASH("front_light");
     scene->lights[light].colour = vec3f::one();
     scene->lights[light].direction = vec3f::one();
-    scene->lights[light].type = LIGHT_TYPE_DIR;
+    scene->lights[light].type = e_light_type::dir;
     scene->transforms[light].translation = vec3f::zero();
     scene->transforms[light].rotation = quat();
     scene->transforms[light].scale = vec3f::one();
-    scene->entities[light] |= CMP_LIGHT;
-    scene->entities[light] |= CMP_TRANSFORM;
+    scene->entities[light] |= e_cmp::light;
+    scene->entities[light] |= e_cmp::transform;
 
     // ground
     u32 ground = get_new_entity(scene);
@@ -44,7 +52,7 @@ void example_setup(ecs_scene* scene, camera& cam)
     scene->transforms[ground].translation = vec3f::zero();
     scene->transforms[ground].rotation = quat();
     scene->transforms[ground].scale = vec3f(50.0f, 1.0f, 50.0f);
-    scene->entities[ground] |= CMP_TRANSFORM;
+    scene->entities[ground] |= e_cmp::transform;
     scene->parents[ground] = ground;
     instantiate_geometry(box, scene, ground);
     instantiate_material(default_material, scene, ground);
@@ -61,13 +69,8 @@ void example_setup(ecs_scene* scene, camera& cam)
 
     const c8* primitive_names[] = {"box", "cylinder", "capsule", "cone", "sphere"};
 
-    physics::shape_type primitive_types[] = {
-        physics::e_shape::box,
-        physics::e_shape::cylinder,
-        physics::e_shape::capsule,
-        physics::e_shape::cone,
-        physics::e_shape::sphere
-    };
+    physics::shape_type primitive_types[] = {physics::e_shape::box, physics::e_shape::cylinder, physics::e_shape::capsule,
+                                             physics::e_shape::cone, physics::e_shape::sphere};
 
     geometry_resource* primitive_resources[] = {box, cylinder, capsule, cone, sphere};
 
@@ -94,7 +97,7 @@ void example_setup(ecs_scene* scene, camera& cam)
                     scene->transforms[new_prim].rotation = quat();
                     scene->transforms[new_prim].scale = vec3f::one();
                     scene->transforms[new_prim].translation = cur_pos;
-                    scene->entities[new_prim] |= CMP_TRANSFORM;
+                    scene->entities[new_prim] |= e_cmp::transform;
                     scene->parents[new_prim] = new_prim;
                     instantiate_geometry(primitive_resources[p], scene, new_prim);
                     instantiate_material(default_material, scene, new_prim);
