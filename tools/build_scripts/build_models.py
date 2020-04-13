@@ -10,13 +10,13 @@ import models.parse_meshes as parse_meshes
 import models.parse_materials as parse_materials
 import models.parse_animations as parse_animations
 import models.parse_obj as parse_obj
+import subprocess
 
 stats_start = time.time()
 root_dir = os.getcwd()
 model_dir = ""
 schema = "{http://www.collada.org/2005/11/COLLADASchema}"
 transform_types = ["translate", "rotate", "matrix"]
-
 geom_attach_data_list = []
 material_attach_data_list = []
 material_symbol_list = []
@@ -27,6 +27,7 @@ parent_list = []
 animations = []
 geometries = []
 materials = []
+
 
 def parse_visual_scenes(root):
     for scene in root.iter(schema+'visual_scene'):
@@ -153,15 +154,19 @@ def parse_dae():
 # File Writers
 def write_scene_file():
     # write out nodes and transforms
-    numjoints = len(joint_list)
-    if numjoints == 0:
+    num_nodes = len(joint_list)
+    if num_nodes == 0:
         return
     scene_data = [struct.pack("i", (int(helpers.version_number))),
-                  struct.pack("i", (int(numjoints)))]
-    for j in range(numjoints):
+                  struct.pack("i", (int(num_nodes)))]
+    num_meshes = 0
+    for j in range(num_nodes):
+        num_meshes += int(len(material_attach_data_list[j]))
+    scene_data.append(struct.pack("i", num_meshes))
+    for j in range(num_nodes):
         if joint_list[j] is None:
             joint_list[j] = "no_name"
-        scene_data.append(struct.pack("i", (int(type_list[j]))))
+        scene_data.append(struct.pack("i", (int(type_list[j]))))  # node type
         helpers.pack_parsable_string(scene_data, joint_list[j])
         helpers.pack_parsable_string(scene_data, geom_attach_data_list[j])
         scene_data.append(struct.pack("i", (int(len(material_attach_data_list[j])))))
@@ -184,11 +189,9 @@ def write_joint_file():
     # write out joints
     if len(joint_list) == 0:
         return
-
-    numjoints = len(joint_list)
     joint_data = [struct.pack("i", (int(helpers.version_number))),
                   struct.pack("i", (int(len(animations))))]
-    # write out anims
+    # write out animations
     for animation_instance in animations:
         num_times = len(animation_instance.inputs)
         bone_index = int(animation_instance.bone_index)
@@ -206,7 +209,6 @@ def write_joint_file():
                 joint_data.append(struct.pack("f", (float(animation_instance.rotation_x[t]))))
                 joint_data.append(struct.pack("f", (float(animation_instance.rotation_y[t]))))
                 joint_data.append(struct.pack("f", (float(animation_instance.rotation_z[t]))))
-
     helpers.output_file.joints.append(joint_data)
 
 
@@ -223,16 +225,36 @@ if "-i" in sys.argv and "-o" in sys.argv:
             if not os.path.exists(helpers.build_dir):
                 os.makedirs(helpers.build_dir)
 
+
+mesh_opt = ""
+if "-mesh_opt" in sys.argv:
+    for a in range(0, len(sys.argv)):
+        if sys.argv[a] == "-mesh_opt":
+            mesh_opt = sys.argv[a+1]
+
+
+def get_dep_inputs(inputs):
+    # add dependency to the build scripts dae
+    main_file = os.path.realpath(__file__)
+    inputs.append(os.path.realpath(__file__))
+    models_lib = ["parse_materials.py",
+                  "parse_animations.py",
+                  "parse_meshes.py",
+                  "parse_scene.py",
+                  "parse_obj.py"]
+    for lib_file in models_lib:
+        inputs.append(main_file.replace("build_models.py", os.path.join("models", lib_file)))
+    if len(mesh_opt) > 0:
+        inputs.append(mesh_opt)
+    return inputs
+
+
 # build list of files
 for file in file_list:
-    deps = dict()
-    deps["files"] = []
-
     # file path stuff, messy!
     f = file
     root = os.path.dirname(f)
     [fnoext, fext] = os.path.splitext(file)
-
     out_dir = helpers.build_dir
     current_filename = os.path.basename(file)
     helpers.current_filename = current_filename
@@ -240,23 +262,20 @@ for file in file_list:
     helpers.output_file = helpers.pmm_file()
     base_out_file = os.path.join(out_dir, os.path.basename(fnoext))
     depends_dest = base_out_file
-
-    deps["dir"] = out_dir
     util.create_dir(out_dir)
-
+    # build different model formats
     if file.endswith(".obj"):
-        dependency_inputs = [os.path.join(os.getcwd(), f)]
+        dependency_inputs = get_dep_inputs([os.path.join(os.getcwd(), f)])
         dependency_outputs = [depends_dest + ".pmm"]
-        # add dependency to the scripts for obj
-        main_file = os.path.realpath(__file__)
-        dependency_inputs.append(os.path.realpath(__file__))
-        dependency_inputs.append(main_file.replace("build_models.py", os.path.join("models", "parse_obj.py")))
-        file_info = dependencies.create_dependency_info(dependency_inputs, dependency_outputs)
-        deps["files"].append(file_info)
-        if dependencies.check_up_to_date_single(depends_dest + ".pmm"):
-            continue
-        parse_obj.write_geometry(os.path.basename(file), root)
-        helpers.output_file.write(base_out_file + ".pmm")
+        dep = dependencies.create_dependency_info(dependency_inputs, dependency_outputs)
+        if not dependencies.check_up_to_date_single(depends_dest + ".pmm", dep):
+            parse_obj.write_geometry(os.path.basename(file), root)
+            helpers.output_file.write(base_out_file + ".pmm")
+            if len(mesh_opt) > 0:
+                cmd = " -i " + base_out_file + ".pmm"
+                p = subprocess.Popen(mesh_opt + cmd, shell=True)
+                p.wait()
+            dependencies.write_to_file_single(dep, depends_dest + ".dep")
     elif file.endswith(".dae"):
         joint_list = []
         transform_list = []
@@ -269,37 +288,21 @@ for file in file_list:
         node_name_list = []
         animations = []
         image_list = []
+        # create dep info
+        dependency_inputs = get_dep_inputs([os.path.join(os.getcwd(), f)])
+        dependency_outputs = [depends_dest + ".pmm"]
+        dep = dependencies.create_dependency_info(dependency_inputs, dependency_outputs)
+        if not dependencies.check_up_to_date_single(depends_dest + ".dep", dep):
+            util.create_dir(base_out_file + ".pmm")
+            parse_dae()
+            helpers.output_file.write(base_out_file + ".pmm")
+            parse_animations.write_animation_file(base_out_file + ".pma")
+            # apply optimisation
+            if len(mesh_opt) > 0:
+                cmd = " -i " + base_out_file + ".pmm"
+                p = subprocess.Popen(mesh_opt + cmd, shell=True)
+                p.wait()
+            dependencies.write_to_file_single(dep, depends_dest + ".dep")
 
-        dependency_inputs = [os.path.join(os.getcwd(), f)]
-        dependency_outputs = [depends_dest + ".pmm", depends_dest + ".pma"]
 
-        # add dependency to the build scripts dae
-        main_file = os.path.realpath(__file__)
-        dependency_inputs.append(os.path.realpath(__file__))
-        models_lib = ["parse_materials.py",
-                      "parse_animations.py",
-                      "parse_meshes.py",
-                      "parse_scene.py"]
-
-        for lib_file in models_lib:
-            dependency_inputs.append(main_file.replace("build_models.py", os.path.join("models", lib_file)))
-
-        file_info = dependencies.create_dependency_info(dependency_inputs, dependency_outputs)
-
-        deps["files"].append(file_info)
-
-        up_to_date = False
-        up_to_date = dependencies.check_up_to_date_single(depends_dest + ".pma")
-
-        if up_to_date:
-            print(f + " already up to date")
-            continue
-
-        util.create_dir(base_out_file + ".pmm")
-        parse_dae()
-        helpers.output_file.write(base_out_file + ".pmm")
-        parse_animations.write_animation_file(base_out_file + ".pma")
-
-    if len(deps["files"]) > 0:
-        dependencies.write_to_file_single(deps, depends_dest + ".json")
 

@@ -12,8 +12,8 @@ namespace pen
     pen_creation_params pen_entry(int argc, char** argv)
     {
         pen::pen_creation_params p;
-        p.window_width = 1280;
-        p.window_height = 720;
+        p.window_width = 1920;
+        p.window_height = 1080;
         p.window_title = "sss";
         p.window_sample_count = 4;
         p.user_thread_function = user_entry;
@@ -40,7 +40,7 @@ void example_setup(ecs_scene* scene, camera& cam)
     scene->lights[light].colour = vec3f::one();
     scene->lights[light].direction = vec3f::one();
     scene->lights[light].type = e_light_type::dir;
-    scene->lights[light].shadow_map = true;
+    scene->lights[light].flags |= e_light_flags::shadow_map;
     scene->transforms[light].translation = vec3f::zero();
     scene->transforms[light].rotation = quat();
     scene->transforms[light].scale = vec3f::one();
@@ -48,7 +48,7 @@ void example_setup(ecs_scene* scene, camera& cam)
     scene->entities[light] |= e_cmp::transform;
 
     // load head model
-    u32 head_model = load_pmm("data/models/head_smooth.pmm", scene) + 1; // node 0 in the model is environment ambient light
+    u32 head_model = load_pmm("data/models/head_smooth.pmm", scene) + 2; // node 0 in the model is environment ambient light
     PEN_ASSERT(is_valid(head_model));
 
     // set character scale and pos
@@ -89,7 +89,7 @@ void example_update(ecs::ecs_scene* scene, camera& cam, f32 dt)
 {
     // rotate light
     cmp_light& snl = scene->lights[0];
-    snl.azimuth += dt * 100.0f;
+    snl.azimuth += dt;
     snl.altitude = maths::deg_to_rad(108.0f);
     snl.direction = maths::azimuth_altitude_to_xyz(snl.azimuth, snl.altitude);
 }

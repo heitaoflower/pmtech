@@ -8,22 +8,6 @@ local function add_pmtech_links()
 	configuration {}
 end
 
-local function copy_shared_libs()
-	configuration "Debug"
-		postbuildcommands 
-		{
-			("{COPY} " .. shared_libs_dir .. " %{cfg.targetdir}")
-		}
-		
-	configuration "Release"
-		postbuildcommands 
-		{
-			("{COPY} " .. shared_libs_dir .. " %{cfg.targetdir}")
-		}
-	
-	configuration {}
-end
-
 local function setup_osx()
 	links 
 	{ 
@@ -31,24 +15,12 @@ local function setup_osx()
 		"GameController.framework",
 		"iconv",
 		"fmod",
-		"IOKit.framework"
+		"IOKit.framework",
+		"MetalKit.framework",
+		"Metal.framework",
+		"OpenGL.framework"
 	}
-	
-	if renderer_dir == "metal" then
-		links 
-		{ 
-			"MetalKit.framework",
-			"Metal.framework"
-		}
-	elseif renderer_dir == "opengl" then
-		links 
-		{ 
-			"OpenGL.framework"
-		}
-	end
-	
 	add_pmtech_links()
-	copy_shared_libs()
 end
 
 local function setup_linux()
@@ -61,7 +33,8 @@ local function setup_linux()
 		"GLU",
 		"GL",
 		"X11",
-		"fmod"
+		"fmod",
+		"dl"
 	}
 end
 
@@ -116,25 +89,13 @@ local function setup_ios()
 		"Foundation.framework",
 		"UIKit.framework",
 		"QuartzCore.framework",
+		"MetalKit.framework",
+		"Metal.framework"
 	}
-	
-	if renderer_dir == "metal" then
-		links 
-		{ 
-			"MetalKit.framework",
-			"Metal.framework"
-		}
-	elseif renderer_dir == "opengl" then
-		links 
-		{ 
-			"OpenGLES.framework",
-			"GLKit.framework",
-		}
-	end
-	
+		
 	files 
 	{ 
-		(pmtech_dir .. "/template/ios/**.*"),
+		(pmtech_dir .. "/core/template/ios/**.*"),
 		"bin/ios/data"
 	}
 
@@ -152,8 +113,8 @@ end
 local function setup_android()
 	files
 	{
-		pmtech_dir .. "/template/android/manifest/**.*",
-		pmtech_dir .. "/template/android/activity/**.*"
+		pmtech_dir .. "/core/template/android/manifest/**.*",
+		pmtech_dir .. "/core/template/android/activity/**.*"
 	}
 	
 	androidabis
@@ -177,26 +138,16 @@ local function setup_platform()
 end
 
 local function setup_bullet()
-	bullet_lib = "bullet_monolithic"
-	bullet_lib_debug = "bullet_monolithic_d"
-	bullet_lib_dir = platform_dir
-
-	if _ACTION == "vs2017" or _ACTION == "vs2015" then
-		bullet_lib_dir = _ACTION
-		bullet_lib = (bullet_lib)
-		bullet_lib_debug = (bullet_lib_debug)
-	end
-	
 	libdirs
 	{
-		(pmtech_dir .. "third_party/bullet/lib/" .. bullet_lib_dir)
+		(pmtech_dir .. "third_party/bullet/lib/" .. platform_dir)
 	}
 	
 	configuration "Debug"
-		links { bullet_lib_debug }
+		links { "bullet_monolithic_d" }
 	
 	configuration "Release"
-		links { bullet_lib }
+		links { "bullet_monolithic" }
 	
 	configuration {}
 end
@@ -213,71 +164,79 @@ function setup_modules()
 	setup_fmod()
 end
 
-function create_app(project_name, source_directory, root_directory)
+
+function create_binary(project_name, source_directory, root_directory, binary_type)
 	project ( project_name )
-		setup_product( project_name )
-		kind "WindowedApp"
-		language "C++"
-		dependson{ "pen", "put" }
-		
-		includedirs
-		{
-			-- core
-			pmtech_dir .. "source/pen/include",
-			pmtech_dir .. "source/pen/include/common", 
-			pmtech_dir .. "source/pen/include/" .. platform_dir,
-			pmtech_dir .. "source/pen/include/" .. renderer_dir,
+			setup_product( project_name )
+			kind ( binary_type )
+			language "C++"
 			
-			--utility			
-			pmtech_dir .. "source/put/source/",
+			if binary_type ~= "SharedLib" then
+				dependson { "pen", "put" }
+			end
+		
+			includedirs
+			{
+				-- platform
+				pmtech_dir .. "core/pen/include",
+				pmtech_dir .. "core/pen/include/common", 
+				pmtech_dir .. "core/pen/include/" .. platform_dir,
 			
-			-- third party			
-			pmtech_dir .. "third_party/",
+				--utility			
+				pmtech_dir .. "core/put/source/",
+			
+				-- third party			
+				pmtech_dir .. "third_party/",
 		
-			"include/",
-		}
+				-- local
+				"include/",
+			}
 		
-		files 
-		{ 
-			(root_directory .. "code/" .. source_directory .. "/**.cpp"),
-			(root_directory .. "code/" .. source_directory .. "/**.c"),
-			(root_directory .. "code/" .. source_directory .. "/**.h"),
-			(root_directory .. "code/" .. source_directory .. "/**.m"),
-			(root_directory .. "code/" .. source_directory .. "/**.mm")
-		}
+			files 
+			{ 
+				(root_directory .. "code/" .. source_directory .. "/**.cpp"),
+				(root_directory .. "code/" .. source_directory .. "/**.c"),
+				(root_directory .. "code/" .. source_directory .. "/**.h"),
+				(root_directory .. "code/" .. source_directory .. "/**.m"),
+				(root_directory .. "code/" .. source_directory .. "/**.mm")
+			}
 		
-		setup_env()
-		setup_platform()
-		setup_modules()
+			setup_env()
+			setup_platform()
+			setup_platform_defines()
+			setup_modules()
 	
-		location (root_directory .. "/build/" .. platform_dir)
-		targetdir (root_directory .. "/bin/" .. platform_dir)
-		debugdir (root_directory .. "/bin/" .. platform_dir)
+			location (root_directory .. "/build/" .. platform_dir)
+			targetdir (root_directory .. "/bin/" .. platform_dir)
+			debugdir (root_directory .. "/bin/" .. platform_dir)
 						
-		configuration "Release"
-			defines { "NDEBUG" }
-			entrypoint "WinMainCRTStartup"
-			optimize "Speed"
-			targetname (project_name)
-			architecture "x64"
-			libdirs
-			{ 
-				pmtech_dir .. "source/pen/lib/" .. platform_dir .. "/release", 
-				pmtech_dir .. "source/put/lib/" .. platform_dir .. "/release",
-			}
+			configuration "Release"
+				defines { "NDEBUG" }
+				entrypoint "WinMainCRTStartup"
+				optimize "Speed"
+				targetname (project_name)
+				architecture "x64"
+				libdirs
+				{ 
+					pmtech_dir .. "core/pen/lib/" .. platform_dir .. "/release", 
+					pmtech_dir .. "core/put/lib/" .. platform_dir .. "/release",
+				}
 		
-		configuration "Debug"
-			defines { "DEBUG" }
-			entrypoint "WinMainCRTStartup"
-			symbols "On"
-			targetname (project_name .. "_d")
-			architecture "x64"
-			libdirs
-			{ 
-				pmtech_dir .. "source/pen/lib/" .. platform_dir .. "/debug", 
-				pmtech_dir .. "source/put/lib/" .. platform_dir .. "/debug",
-			}
-		
+			configuration "Debug"
+				defines { "DEBUG" }
+				entrypoint "WinMainCRTStartup"
+				symbols "On"
+				targetname (project_name .. "_d")
+				architecture "x64"
+				libdirs
+				{ 
+					pmtech_dir .. "core/pen/lib/" .. platform_dir .. "/debug", 
+					pmtech_dir .. "core/put/lib/" .. platform_dir .. "/debug",
+				}
+end
+
+function create_app(project_name, source_directory, root_directory)
+	create_binary(project_name, source_directory, root_directory, "WindowedApp")
 end
 
 function create_app_example( project_name, root_directory )

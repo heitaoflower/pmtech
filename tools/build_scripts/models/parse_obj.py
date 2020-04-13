@@ -5,11 +5,9 @@ import sys
 import math
 
 schema = "{http://www.collada.org/2005/11/COLLADASchema}"
-
 x = 0
 y = 1
 z = 2
-
 
 def normalise(v):
     m = 0
@@ -160,7 +158,6 @@ def write_geometry(file, root):
     vb = 2
     ib = 3
     pb = 4
-    cb = 5
 
     meshes = []
     cur_mesh = None
@@ -229,7 +226,6 @@ def write_geometry(file, root):
                         for vf in vertex_data[ii][int(vi)-1]:
                             if elem_index == 0:
                                 cur_mesh[pb].append(float(vf))
-                                cur_mesh[cb].append(float(vf))
                     elem_index += 1
                 for v in vertex:
                     for f in v:
@@ -286,12 +282,16 @@ def write_geometry(file, root):
             mesh_data.append(struct.pack("f", (float(max_extents[i]))))
 
         # write vb and ib
-        mesh_data.append(struct.pack("i", int(num_verts)))
-        mesh_data.append(struct.pack("i", int(index_size)))
-        mesh_data.append(struct.pack("i", (len(mesh[pb]))))
-        mesh_data.append(struct.pack("i", (len(generated_vb))))
-        mesh_data.append(struct.pack("i", (len(mesh[ib]))))
-        mesh_data.append(struct.pack("i", (len(mesh[cb]))))
+        handedness = 0
+        if flip_winding:
+            handedness = 1
+        mesh_data.append(struct.pack("i", int(handedness)))
+        mesh_data.append(struct.pack("i", int(num_verts)))   # num pos verts
+        mesh_data.append(struct.pack("i", int(index_size)))  # pos index size
+        mesh_data.append(struct.pack("i", (len(mesh[ib]))))  # pos buffer index count
+        mesh_data.append(struct.pack("i", int(num_verts)))   # num vb verts
+        mesh_data.append(struct.pack("i", int(index_size)))  # vertex index size
+        mesh_data.append(struct.pack("i", (len(mesh[ib]))))  # vertex buffer index count
         # skinning is not supported in obj, but write any fixed length data anyway
         mesh_data.append(struct.pack("i", int(skinned)))
         mesh_data.append(struct.pack("i", int(num_joint_floats)))
@@ -302,18 +302,16 @@ def write_geometry(file, root):
             mesh_data.append(struct.pack("f", (float(vf))))
         for vf in generated_vb:
             mesh_data.append(struct.pack("f", (float(vf))))
-
         data_size += len(mesh_data)*4
 
+        # write index buffer twice, at this point they match, but after optimisation
+        # the number of indices in position only vs vertex buffer may changes
         for index in mesh[ib]:
             mesh_data.append(struct.pack(index_type, (int(index))))
-
         data_size += len(mesh[ib]) * 2
-
-        for vf in mesh[cb]:
-            mesh_data.append(struct.pack("f", (float(vf))))
-
-        data_size += len(mesh[cb]) * 4
+        for index in mesh[ib]:
+            mesh_data.append(struct.pack(index_type, (int(index))))
+        data_size += len(mesh[ib]) * 2
 
         for m in mesh_data:
             geometry_data.append(m)
@@ -322,22 +320,23 @@ def write_geometry(file, root):
     helpers.output_file.geometry.append(geometry_data)
     helpers.output_file.geometry_sizes.append(data_size)
 
-    scene_data = [struct.pack("i", (int(helpers.version_number))),
-                  struct.pack("i", (int(len(meshes))))]
+    scene_data = [struct.pack("i", int(helpers.version_number)),
+                  struct.pack("i", int(len(meshes))),
+                  struct.pack("i", int(0))]
 
     for m in meshes:
-        scene_data.append(struct.pack("i", (int(0)))) # node type
+        scene_data.append(struct.pack("i", (int(0))))  # node type
         helpers.pack_parsable_string(scene_data, basename)
         helpers.pack_parsable_string(scene_data, m[0])
-        scene_data.append(struct.pack("i", int(1))) # num sub meshes
+        scene_data.append(struct.pack("i", int(1)))  # num sub meshes
 
         # material name / symbol
         helpers.pack_parsable_string(scene_data, m[mat_name])
         helpers.pack_parsable_string(scene_data, m[mat_name])
 
-        scene_data.append(struct.pack("i", (int(0)))) # parent
-        scene_data.append(struct.pack("i", (int(1)))) # transform count
-        scene_data.append(struct.pack("i", (int(3)))) # transform type
+        scene_data.append(struct.pack("i", (int(0))))  # parent
+        scene_data.append(struct.pack("i", (int(1))))  # transform count
+        scene_data.append(struct.pack("i", (int(3))))  # transform type
 
     helpers.output_file.scene.append(scene_data)
 

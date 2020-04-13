@@ -1,8 +1,5 @@
+import common.jsn
 {            
-    include: [
-        common.jsn
-    ],
-    
     render_targets:
     {
         mip_mapped:
@@ -10,14 +7,13 @@
             size    : equal,
             format  : rgba8,
             mips    : true
-        },
-    }
+        }
+    },
     
     views:
     {    
-        rtmm:
+        rtmm(main_view):
         {
-            inherit: main_view,
             target : [mip_mapped],
             clear_colour : [0.0, 1.0, 0.0, 1.0],
             clear_depth : 1.0,

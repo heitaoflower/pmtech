@@ -19,10 +19,10 @@ solution ("pmtech_examples_" .. platform)
 	}
 	
 -- Engine Project	
-dofile "../source/pen/project.lua"
+dofile "../core/pen/project.lua"
 
 -- Toolkit Project	
-dofile "../source/put/project.lua"
+dofile "../core/put/project.lua"
 
 -- Example projects	
 -- ( project name, current script dir, )
@@ -43,7 +43,6 @@ create_app_example( "imgui", script_path() )
 create_app_example( "input", script_path() )
 create_app_example( "audio_player", script_path() )
 create_app_example( "shader_toy", script_path() )
-create_app_example( "pmtech_editor", script_path() )
 create_app_example( "rigid_body_primitives", script_path() )
 create_app_example( "physics_constraints", script_path() )
 create_app_example( "instancing", script_path() )
@@ -70,3 +69,5 @@ create_app_example( "ik", script_path() )
 create_app_example( "stencil_shadows", script_path() )
 create_app_example( "msaa_resolve", script_path() )
 create_app_example( "compute_demo", script_path() )
+create_app_example( "global_illumination", script_path() )
+

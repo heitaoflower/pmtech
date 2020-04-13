@@ -60,6 +60,21 @@ struct vs_input_multi
     }
 };
 
+struct vs_input_position_only
+{
+	float4 position : POSITION;
+	
+	if:(SKINNED)
+    {
+		float4 normal : TEXCOORD0;
+		float4 texcoord : TEXCOORD1;
+		float4 tangent : TEXCOORD2;
+		float4 bitangent : TEXCOORD3;
+		float4 blend_indices : TEXCOORD4;
+		float4 blend_weights : TEXCOORD5;
+    }
+};
+
 // vs outputs / ps inputs
 struct vs_output
 {
@@ -133,7 +148,7 @@ shader_resources
     texture_2d_array( area_light_textures, 11 );
 };
 
-vs_output_zonly vs_main_zonly( vs_input_multi input, vs_instance_input instance_input )
+vs_output_zonly vs_main_zonly( vs_input_position_only input, vs_instance_input instance_input )
 {
     vs_output_zonly output;
     
@@ -173,7 +188,7 @@ vs_output_zonly vs_main_zonly( vs_input_multi input, vs_instance_input instance_
     return output;
 }
 
-vs_output_zonly_wp vs_main_zonly_wp( vs_input_multi input, vs_instance_input instance_input )
+vs_output_zonly_wp vs_main_zonly_wp( vs_input_position_only input, vs_instance_input instance_input )
 {
     vs_output_zonly_wp output;
     
@@ -413,8 +428,9 @@ ps_output ps_forward_lit( vs_output input )
     if:(INSTANCED)
     {
         roughness = input.colour.a;
+        albedo.a = 1.0;
     }
-    
+        
     if:(SDF_SHADOW)
     {            
         n = input.normal.rgb;
@@ -592,9 +608,10 @@ ps_output ps_forward_lit( vs_output input )
                 float3 to_light = (input.world_pos.xyz - lights[i].pos_radius.xyz);
                 float d = length(to_light) / 2.0; // omni shadow space far plane is radius * 2.0
                 float3 cv = normalize(to_light) * float3(1.0, 1.0, -1.0);
+                
                 float cube_d = sample_texture_cube_array_level(omni_shadow_texture, cv, float(omni_shadow_index), 0).r;
-                lit_colour += d < cube_d * lights[i].pos_radius.w ? light_col : 0.0;
-            
+                lit_colour += d < cube_d * lights[i].pos_radius.w ? light_col : float3(0.0, 0.0, 0.0);
+
                 ++omni_shadow_index;
             }
         }   
@@ -728,12 +745,15 @@ ps_output ps_forward_lit( vs_output input )
         }
     }
 
-    output.colour.rgb = lit_colour.rgb;    
+    output.colour.rgb = lit_colour.rgb * albedo.a;    
     output.colour.a = albedo.a;
-
+    
+    if(albedo.a <= 0.0)
+    	discard;
+    	
     return output;
 }
-x
+
 ps_output_multi ps_gbuffer( vs_output input ) 
 {    
     ps_output_multi output;
