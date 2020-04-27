@@ -306,7 +306,7 @@ namespace put
             vec3f       colour;
             f32         radius = 10.0f;
             f32         spot_falloff = 0.05f;
-            f32         cos_cutoff = -M_PI / 4.0f;
+            f32         cos_cutoff = -(f32)M_PI / 4.0f;
             f32         azimuth;
             f32         altitude;
             vec3f       direction;
@@ -375,6 +375,12 @@ namespace put
             vec4f      info;
             area_light lights[e_scene_limits::max_area_lights];
         };
+        
+        struct gi_volume_info
+        {
+            vec4f   scene_size;
+            vec4f   volume_size;
+        };
 
         struct free_node_list
         {
@@ -434,7 +440,7 @@ namespace put
 
             ecs_scene()
             {
-                num_base_components = (((size_t)&num_base_components) - ((size_t)&entities)) / sizeof(generic_cmp_array);
+                num_base_components = (u32)(((size_t)&num_base_components) - ((size_t)&entities)) / sizeof(generic_cmp_array);
                 num_components = num_base_components;
             };
 
@@ -494,6 +500,7 @@ namespace put
             u32              sdf_shadow_buffer = PEN_INVALID_HANDLE;
             u32              area_light_buffer = PEN_INVALID_HANDLE;
             u32              shadow_map_buffer = PEN_INVALID_HANDLE;
+            u32              gi_volume_buffer = PEN_INVALID_HANDLE;
             s32              selected_index = -1;
             scene_flags      flags = 0;
             scene_view_flags view_flags = 0;

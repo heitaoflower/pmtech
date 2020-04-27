@@ -21,7 +21,6 @@
 
 extern pen::window_creation_params pen_window;
 a_u8                               g_window_resize(0);
-2
 using namespace pen;
 
 #define NBB 3                          // num "back buffers" / swap chains / inflight command buffers
@@ -2495,12 +2494,12 @@ namespace pen
             for (u32 i = 0; i < num_colour_targets; ++i)
             {
                 u32 ct = colour_targets[i];
-                if (ct == 0)
-                    ct += _ctx.ii;
+                if (ct == PEN_BACK_BUFFER_COLOUR)
+                    ct = _ctx.ii;
                 sb_push(_state.colour_attachments, ct);
             }
 
-            if (depth_target == 0)
+            if (depth_target == PEN_BACK_BUFFER_DEPTH)
             {
                 depth_target = NBB + _ctx.ii;
             }
